@@ -1,0 +1,4 @@
+Hardware\ Manuals/
+Drivers/
+*.ipynb_checkpoints/
+*__pycache__*
