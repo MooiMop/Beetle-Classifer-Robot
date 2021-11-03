@@ -33,7 +33,7 @@ Start by installing [ThorCam](https://www.thorlabs.com/software_pages/ViewSoftwa
 ```
 conda create --name BCR
 conda activate BCR
-conda install matplotlib jupyter pip
+conda install matplotlib jupyter pip h5py
 conda install -c conda-forge pylablib
 pip install pyvisa pyvisa-py
 ```
@@ -46,3 +46,4 @@ Navigate to this folder through your terminal of choice and start a *Jupyter Not
 | PyVisa      | Sending commands to  and receiving status codes from the ESP300| [Docs](https://pyvisa.readthedocs.io/en/latest/introduction/index.html) |
 | pylablib | Interfacing with the ThorLabs camera through Python | [Basics](https://pylablib.readthedocs.io/en/latest/devices/cameras_basics.html)[Docs](https://pylablib.readthedocs.io/en/latest/devices/uc480.html#cameras-uc480) [Commands](https://pylablib.readthedocs.io/en/latest/.apidoc/pylablib.devices.uc480.html) [VISA](https://pylablib.readthedocs.io/en/latest/devices/generic_awgs.html?highlight=VISA)
 | ThorCam | Driver necessary for operating camera | [Driver](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam) |
+| h5py | data storage interface HDF5 | [Docs](https://docs.h5py.org/en/latest/build.html)
