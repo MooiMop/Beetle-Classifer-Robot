@@ -12,7 +12,7 @@ except ModuleNotFoundError:
 
 class Cam():
 
-    def __init__(self, testflight=False):
+    def __init__(self, settings={}, testflight=False):
         # Make sure the connection to the camera is shutdown when the program
         # exits. Without this, the camera must be physically unplugged each
         # time you rerun the code.
@@ -25,47 +25,87 @@ class Cam():
             if 'self' not in key:
                 self.__setattr__(key, eval(key))
 
+        default_settings = {
+            'pixel_rate': 5e6,
+            'frame_period': 0.15,
+            'exposure': 0.15,
+            'gains': (1.0, 1.0, 1.0, 1.0),
+            'color_mode': 'rgb8p',
+            'binning': (1, 1),
+            'roi': (400,900,300,700,1,1)
+        }
+        default_settings.update(settings)
+        self.settings = default_settings
+
         if testflight:
-            tools.logprint(
-                tools.bcolors.blue(
-                    'Initializing fictional connection with camera'))
+            tools.logprint(f'Initializing {tools.bcolors.yellow("fictional")} '
+                           'connection with camera.')
         else:
-            tools.logprint(
-                tools.bcolors.blue(
-                    'Initializing connection with camera'))
+            tools.logprint('Initializing connection with camera')
             try:
                 # Connect to first available camera
                 self.instrument = uc480.UC480Camera(cam_id=0)
-                # Next 4 lines might be unnecessary
-                if self.instrument.is_opened():
-                    tools.logprint(
-                        tools.bcolors.green(
-                            'Connected to camera succesfully.'))
-                else:
-                    raise IOError(
-                        tools.bcolors.red(
-                            'Camera not connected'))
+                self.instrument.apply_settings(self.settings)
+                #self.instrument.setup_acquisition()
             except OSError:
                 self.testflight = True
 
     def shutdown(self):
-        tools.logprint('Disconnecting camera')
+        tools.logprint('Disconnecting camera', 'yellow')
         if not self.testflight:
             self.instrument.close()
 
-    def get_settings(self):
-        if not self.testflight:
-            print(self.instrument.get_settings())
+    def check_connection(self):
+        if self.instrument.is_opened():
+            tools.logprint('Camera is connected.', 'green')
+            return True
+        else:
+            raise IOError(tools.bcolors.red('Camera not connected'))
+            return False
 
-    def take_images(self, nframes=1, median=True, show=False):
+    def get_settings(self, print=True):
+        if self.testflight:
+            return {}
+        else:
+            settings = self.instrument.get_settings()
+            tools.print_dict(settings)
+            return settings
+
+    def take_images_alt(self, nframes=1, median=False, show=False):
         if self.testflight:
             img = self._random_image(nframes)
         else:
+            #dump = self.instrument.snap()
             img = self.instrument.grab(nframes)
+
+        img = np.array(img).astype('uint8')
 
         if median and nframes > 1:
             tools.logprint('Taking median of captured images.')
-            img = np.median(img, axis=0)
+            img = np.median(img, axis=0).astype('uint8')
+
+        if show:
+            try:
+                plt.imshow(img)
+            except TypeError:  # imshow can only plot 1 image
+                plt.imshow(img[-1])  # plot last image
+            plt.show()
+
+        return img
+
+    def take_images(self, nframes=1, median=False, show=False):
+        if self.testflight:
+            img = self._random_image(nframes)
+        else:
+            self.instrument.start_acquisition()
+            self.instrument.wait_for_frame(nframes=nframes)
+            img = self.instrument.read_multiple_images()
+            self.instrument.stop_acquisition()
+
+        img = np.array(img).astype('uint8')
+
+        if median and nframes > 1:
+            img = np.median(img, axis=0).astype('uint8')
 
         if show:
             try:
@@ -79,17 +119,30 @@ class Cam():
     def _random_image(self, nframes=1):
         img = []
         for frame in range(nframes):
-            # seed = sorted( np.random.randint(-2,2,2) )
             x = y = np.linspace(-5, 5, 500)
             X, Y = np.meshgrid(x, y)
-            noise = 2 * np.random.random((500, 500)) - 1
+            noise = np.random.random((500, 500)) - 0.5
             f = np.sinc(np.hypot(X, Y)) + noise
             img.append(f)
-            
+
         return(img)
 
 
 if __name__ == '__main__':
 
-    cam = Cam(testflight=True)
-    img = cam.take_images(50, show=True, median=True)
+
+    '''cam = Cam()
+    print(cam.instrument.get_all_color_modes())
+    print(cam.instrument.get_available_pixel_rates())
+    print(cam.instrument.get_acquisition_parameters())
+
+    img = cam.take_images(10, show=False, median=False)
+    for im in img:
+        plt.imshow(im)
+        plt.show()
+    cam.shutdown()'''
+
+    cam = Cam()
+    tools.print_dict(cam.instrument.get_full_info())
+    #cam.get_settings()
+    img = cam.take_images(10, show=True, median=True)

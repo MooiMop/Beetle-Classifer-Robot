@@ -1,5 +1,7 @@
 import pyvisa
+import atexit
 from sys import platform
+
 try:
     import Modules.tools as tools
 except ModuleNotFoundError:
@@ -10,8 +12,26 @@ class ESP():
     READ_TERMINATION = '\n'
     WRITE_TERMINATION = '\n'
     TIMEOUT = 60000  # milliseconds
+    COMMANDS = {
+        'define home': 'DH',
+        'move to absolute position': 'PA',
+        'move to relative position': 'PR',
+        'read error code': 'TE?',
+        'set velocity': 'VA',
+        'wait for motion stop': 'WS',
 
-    def __init__(self, axis, MAX_POSITION=[-20, 100], testflight=False):
+    }
+    ERROR_CODES = {
+        '7': 'PARAMETER OUT OF RANGE',
+        '9': 'AXIS NUMBER OUT OF RANGE',
+        '10': 'MAXIMUM VELOCITY EXCEEDED',
+        '13': 'MOTOR NOT ENABLED',
+        '37': 'AXIS NUMBER MISSING',
+        '38': 'COMMAND PARAMETER MISSING'
+    }
+
+    def __init__(self, axis, MAX_POSITION=[-39, 90], velocity=2,
+                 testflight=False):
         # Convert supplied parameters to their 'self' equivalents.
         for key in dir():
             if 'self' not in key:
@@ -19,18 +39,15 @@ class ESP():
 
         if testflight:
             self.current_position = 0.0
-            tools.logprint(
-                tools.bcolors.blue('Initializing fictional connection with '
-                                   'ESP'))
+            tools.logprint(f'Initializing {tools.bcolors.yellow("fictional")} '
+                           'connection with ESP.')
         elif platform != "win32":
             self.current_position = 0.0
-            tools.logprint(
-                tools.bcolors.yellow('Not running on Windows platform. '
-                                     'Turning on testflight mode.'))
+            tools.logprint('Not running on Windows platform. Turning on '
+                           'testflight mode.', 'yellow')
             self.testflight = True
         else:
-            tools.logprint(
-                tools.bcolors.blue('Initializing new connection with ESP'))
+            tools.logprint('Initializing new connection with ESP.')
             rm = pyvisa.ResourceManager()
             resources = rm.list_resources()
             # print('Resource manager used:       ',rm)
@@ -45,18 +62,32 @@ class ESP():
                 self.instrument.read_termination = self.READ_TERMINATION
                 self.instrument.write_termination = self.WRITE_TERMINATION
                 self.instrument.timeout = self.TIMEOUT
+                # Set device specific parameters
+                self.send_command('set velocity', velocity)
 
             else:
-                raise IOError(tools.bcolors.red('Could not find GPIB device.'))
+                raise IOError('Could not find GPIB device.', 'red')
 
-    def send_command(self, command):
+        atexit.register(self.move_home)
+
+    def send_command(self, command, parameter=''):
         if self.testflight:
             return True
         else:
-            self.instrument.write(command)
-            err = self.instrument.query('TE?')
-            if err != '0\r':
-                print(tools.bcolors.red('ERROR ') + 'code:   ' + err)
+            full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
+            if 'move' in command:
+                wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
+                full_command += ';' + wait
+            self.instrument.write(full_command)
+            err = self.instrument.query(self.COMMANDS['read error code'])[:-1]
+            if err[0] == str(self.axis) and len(err) > 2:
+                err = err[1:]
+            if err != '0':
+                if err in self.ERROR_CODES:
+                    tools.logprint(
+                        f'Error code {err}: {self.ERROR_CODES[err]}', 'red')
+                else:
+                    tools.logprint(f'Error code {err}', 'red')
                 return False
             else:
                 return True
@@ -68,53 +99,48 @@ class ESP():
             return float(self.instrument.query(str(self.axis)+'TP?')[:-1])
 
     def define_home(self):
-        tools.logprint(tools.bcolors.blue('NEW HOME SEQUENCE'))
+        tools.logprint('New home sequence! \n', 'yellow')
         print('Current position:        ', self.get_current_position())
         input(f'Please move axis {self.axis} to desired position manually and '
               'press enter.')
         print('Selected position:        ', self.get_current_position())
-        input = input('Are you sure you want to use this position? (Y/N)')
-        if input in ['Y', 'y']:
-            if self.send_command(str(self.axis) + 'DH'):
-                print('New home position saved.')
+        choice = input('Are you sure you want to use this position? (Y/N)')
+        if choice in ['Y', 'y']:
+            if self.send_command('define home'):
+                tools.logprint('New home position saved.', 'green')
             else:
-                print(tools.bcolors.red('Failed to set new home position.'))
+                tools.logprint('Failed to set new home position.', 'red')
 
-    def move_relative(self, degrees):
+    def move_absolute(self, degrees, verbose=True):
+        if self.MAX_POSITION[0] <= degrees <= self.MAX_POSITION[1]:
+            if verbose: tools.logprint(f'Moving to position {degrees} degrees.')
+            self.send_command('move to absolute position', degrees)
+        else:
+            tools.logprint(f'Desired position {degrees} is out of '
+                           f'operating bounds of axis {self.axis}.', 'red')
+
+    def move_relative(self, degrees, verbose=True):
         new_position = self.get_current_position() + degrees
 
         if self.MAX_POSITION[0] <= new_position <= self.MAX_POSITION[1]:
-            tools.logprint(f'Moving {str(degrees)} degrees.')
-            self.send_command(f'{str(self.axis)}PR{str(degrees)};'
-                              f'{str(self.axis)}WS')
+            if verbose:tools.logprint(f'Moving {degrees} degrees.')
+            self.send_command('move to relative position', degrees)
         else:
-            tools.logprint(
-                tools.bcolors.yellow(f'Desired position {new_position} is out '
-                                     'of operating bounds of axis '
-                                     f'{self.axis}.'))
+            tools.logprint(f'Desired position {new_position} is out of '
+                           f'operating bounds of axis {self.axis}.', 'red')
 
-    def move_absolute(self, degrees):
-        if self.MAX_POSITION[0] <= degrees <= self.MAX_POSITION[1]:
-            tools.logprint(f'Moving to position {str(degrees)} degrees.')
-            self.send_command(f'{str(self.axis)}PA{str(degrees)}'
-                              f';{str(self.axis)}WS')
-        else:
-            tools.logprint(
-                tools.bcolors.yellow(f'Cannot move to position {str(degrees)} '
-                                     'as it is larger than the bounds of the '
-                                     'motor.'))
-
-    def move_home(self):
+    def move_home(self, verbose=True):
         '''
         For some reason, if you set the home position through this code, it
         will not completely override the home position set in firmware.
         Therefore it is better to calculate manually how to move to return to
         home.
         '''
-        tools.logprint('Moving to home position.')
+        if verbose: tools.logprint('Moving to home position.')
         # self.send_command(f'{str(axis)}OR;{str(axis)}WS')
         # self.move_relative(degrees= (self.get_current_position()*-1) )
-        self.move_absolute(degrees=0.0)
+        self.move_absolute(0.00000,False)
+
 
 
 if __name__ == '__main__':

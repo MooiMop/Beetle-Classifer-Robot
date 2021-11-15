@@ -3,3 +3,4 @@ Drivers/
 Experiments/
 *.ipynb_checkpoints/
 *__pycache__*
+*ipynb*

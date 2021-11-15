@@ -1,8 +1,8 @@
 # Beetle Classifier Robot
 
 - *Author* Naor Scheinowitz
-- *Version* 0.1
-- *Last edit* 2021-10-25
+- *Version* 0.3
+- *Last edit* 2021-11-15
 
 ## Introduction
 
