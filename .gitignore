@@ -1,5 +1,6 @@
 Hardware\ Manuals/
 Drivers/
+Testing/
 Experiments/
 *.ipynb_checkpoints/
 *__pycache__*

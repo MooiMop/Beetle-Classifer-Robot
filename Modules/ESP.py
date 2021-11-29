@@ -7,21 +7,79 @@ try:
 except ModuleNotFoundError:
     import tools
 
-
 class ESP():
-    READ_TERMINATION = '\n'
-    WRITE_TERMINATION = '\n'
-    TIMEOUT = 60000  # milliseconds
+    READ_TERMINATION = '\r'
+    WRITE_TERMINATION = '\r'
+    TIMEOUT = 600000  # milliseconds
+
+
+    def __init__(self, identifiers: list, testflight=False):
+        self.testflight = testflight
+
+        if testflight:
+            tools.logprint(f'Initializing {tools.bcolors.yellow("fictional")} '
+                           'connection with ESP.')
+
+        elif platform != "win32":
+            tools.logprint('Not running on Windows platform. Turning on '
+                           'testflight mode.', 'yellow')
+            self.testflight = True
+
+        else:
+            self.rm = pyvisa.ResourceManager()
+            self.instruments = self.connect(identifiers, self.list_devices())
+            atexit.register(self.shutdown)
+
+    def list_devices(self):
+        if not self.testflight:
+            devices = self.rm.list_resources()
+            print('Resource manager used:       ',self.rm)
+            print('Detected devices:          ',devices)
+            return devices
+
+    def connect(self, identifiers, devices):
+        if not self.testflight:
+            tools.logprint('Initializing new connections with ESP '
+                           f'with identifiers {identifiers}.')
+
+            instruments = []
+            for identifier in identifiers:
+                # Find first match in list of connected devices.
+                if identifier in '\t'.join(devices):
+                    match = next(filter(
+                        lambda device: identifier in device, devices), None)
+                    instrument = self.rm.open_resource(match)
+
+                    # Set universal ESP300 parameters
+                    instrument.read_termination = self.READ_TERMINATION
+                    instrument.write_termination = self.WRITE_TERMINATION
+                    instrument.timeout = self.TIMEOUT
+
+                    instruments.append(instrument)
+
+                else:
+                    tools.logprint(f'Cannot find device with id {identifier}',
+                                   'red')
+            return instruments
+
+    def shutdown(self):
+        self.instrument.close()
+        self.rm.close()
+
+
+class Motor():
     COMMANDS = {
         'define home': 'DH',
         'move to absolute position': 'PA',
         'move to relative position': 'PR',
         'read error code': 'TE?',
+        'search for home': 'OR',
+        'set home search mode': 'OM',
         'set velocity': 'VA',
         'wait for motion stop': 'WS',
-
     }
     ERROR_CODES = {
+        '1': 'PCI COMMUNICATION TIME-OUT',
         '7': 'PARAMETER OUT OF RANGE',
         '9': 'AXIS NUMBER OUT OF RANGE',
         '10': 'MAXIMUM VELOCITY EXCEEDED',
@@ -29,57 +87,61 @@ class ESP():
         '37': 'AXIS NUMBER MISSING',
         '38': 'COMMAND PARAMETER MISSING'
     }
-
-    def __init__(self, axis, MAX_POSITION=[-39, 90], velocity=2,
+    def __init__(self, device, axis, MAX_POSITION=[-180, 180], velocity=4,
                  testflight=False):
+
         # Convert supplied parameters to their 'self' equivalents.
         for key in dir():
             if 'self' not in key:
                 self.__setattr__(key, eval(key))
-
         if testflight:
             self.current_position = 0.0
-            tools.logprint(f'Initializing {tools.bcolors.yellow("fictional")} '
-                           'connection with ESP.')
-        elif platform != "win32":
-            self.current_position = 0.0
-            tools.logprint('Not running on Windows platform. Turning on '
-                           'testflight mode.', 'yellow')
-            self.testflight = True
         else:
-            tools.logprint('Initializing new connection with ESP.')
-            rm = pyvisa.ResourceManager()
-            resources = rm.list_resources()
-            # print('Resource manager used:       ',rm)
-            # print('Detected devices:          ',resources)
-            if 'GPIB' in '\t'.join(resources):
-                first = next(filter(
-                    lambda resource: 'GPIB' in resource, resources), None)
-                self.instrument = rm.open_resource(first)
-                print('Connected instrument:    ',
-                      self.instrument.query("*IDN?"))
-                # Set universal ESP300 parameters
-                self.instrument.read_termination = self.READ_TERMINATION
-                self.instrument.write_termination = self.WRITE_TERMINATION
-                self.instrument.timeout = self.TIMEOUT
-                # Set device specific parameters
-                self.send_command('set velocity', velocity)
+            self.instrument = self.device.instrument
+            self.send_command('set velocity', velocity)
+            self.send_command('set home search mode', 0)
 
+    def define_home(self, degrees=0):
+        tools.logprint('New home sequence! \n', 'yellow')
+        print(f'You are about to redefine current position '
+              f' {self.get_current_position()} as {degrees}.')
+        choice = input('Are you sure you want to make this change? (Y/N)')
+        if choice in ['Y', 'y']:
+            if self.send_command('define home'):
+                tools.logprint('New home position saved.', 'green')
             else:
-                raise IOError('Could not find GPIB device.', 'red')
+                tools.logprint('Failed to set new home position.', 'red')
 
-        atexit.register(self.move_home)
+    def get_current_position(self):
+        if self.testflight:
+            return self.current_position
+        else:
+            return float(self.instrument.query(str(self.axis)+'TP?')[:-1])
 
-    def send_command(self, command, parameter=''):
+    def move(self, degrees, mode='relative', verbose=True):
+        if mode == 'home':
+            self.send_command('search for home')
+            return None
+        elif mode == 'absolute':
+            new_position = degrees
+        elif mode == 'relative':
+            new_position = self.get_current_position() + degrees
+
+        allowed = self.MAX_POSITION[0] <= new_position <= self.MAX_POSITION[1]
+        if allowed:
+            if verbose: tools.logprint(f'Moving axis {self.axis} to position '
+                                       f'{new_position} degrees.')
+            self.send_command('move to absolute position', new_position)
+        else:
+            tools.logprint(f'Desired position {new_position} is out of '
+                           f'operating bounds of axis {self.axis}.', 'red')
+
+    def send_ASCII_command(self, command):
         if self.testflight:
             return True
         else:
-            full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
-            if 'move' in command:
-                wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
-                full_command += ';' + wait
-            self.instrument.write(full_command)
-            err = self.instrument.query(self.COMMANDS['read error code'])[:-1]
+            self.instrument.write(command)
+            err = self.instrument.query(self.COMMANDS['read error code'])
             if err[0] == str(self.axis) and len(err) > 2:
                 err = err[1:]
             if err != '0':
@@ -92,61 +154,46 @@ class ESP():
             else:
                 return True
 
-    def get_current_position(self):
+    def send_command(self, command, parameter=''):
         if self.testflight:
-            return self.current_position
+            return True
         else:
-            return float(self.instrument.query(str(self.axis)+'TP?')[:-1])
-
-    def define_home(self):
-        tools.logprint('New home sequence! \n', 'yellow')
-        print('Current position:        ', self.get_current_position())
-        input(f'Please move axis {self.axis} to desired position manually and '
-              'press enter.')
-        print('Selected position:        ', self.get_current_position())
-        choice = input('Are you sure you want to use this position? (Y/N)')
-        if choice in ['Y', 'y']:
-            if self.send_command('define home'):
-                tools.logprint('New home position saved.', 'green')
+            full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
+            if 'move' in command:
+                wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
+                full_command += ';' + wait
+            self.instrument.write(full_command)
+            err = self.instrument.query(self.COMMANDS['read error code'])
+            if err[0] == str(self.axis) and len(err) > 2:
+                err = err[1:]
+            if err != '0':
+                if err in self.ERROR_CODES:
+                    tools.logprint(
+                        f'Error code {err}: {self.ERROR_CODES[err]}', 'red')
+                else:
+                    tools.logprint(f'Error code {err}', 'red')
+                return False
             else:
-                tools.logprint('Failed to set new home position.', 'red')
+                return True
 
-    def move_absolute(self, degrees, verbose=True):
-        if self.MAX_POSITION[0] <= degrees <= self.MAX_POSITION[1]:
-            if verbose: tools.logprint(f'Moving to position {degrees} degrees.')
-            self.send_command('move to absolute position', degrees)
-        else:
-            tools.logprint(f'Desired position {degrees} is out of '
-                           f'operating bounds of axis {self.axis}.', 'red')
+class Polarizer():
 
-    def move_relative(self, degrees, verbose=True):
-        new_position = self.get_current_position() + degrees
-
-        if self.MAX_POSITION[0] <= new_position <= self.MAX_POSITION[1]:
-            if verbose:tools.logprint(f'Moving {degrees} degrees.')
-            self.send_command('move to relative position', degrees)
-        else:
-            tools.logprint(f'Desired position {new_position} is out of '
-                           f'operating bounds of axis {self.axis}.', 'red')
-
-    def move_home(self, verbose=True):
+    def __init__(self, dev1, dev2, ax1, ax2, MAX_POSITION=[-180, 180],
+                 velocity=20, testflight=False):
+        ''' 1 is linear polarizer, 2 is lambda/4 plate
         '''
-        For some reason, if you set the home position through this code, it
-        will not completely override the home position set in firmware.
-        Therefore it is better to calculate manually how to move to return to
-        home.
-        '''
-        if verbose: tools.logprint('Moving to home position.')
-        # self.send_command(f'{str(axis)}OR;{str(axis)}WS')
-        # self.move_relative(degrees= (self.get_current_position()*-1) )
-        self.move_absolute(0.00000,False)
 
+        self.lin_polarizer = Motor(dev1, ax1, MAX_POSITION, velocity, testflight)
+        self.quart_lambda = Motor(dev2, ax2, MAX_POSITION, velocity, testflight)
+
+    def set(self, degrees, verbose=True):
+        '''Hardware definitions:
+        linear polarizer: 0 degrees = vertical
+        lambda/4 plate: 0 degrees = horizontal
+        '''
+        self.lin_polarizer.move(degrees, 'absolute', verbose)
+        self.quart_lambda.move(degrees + 45, 'absolute', verbose)
 
 
 if __name__ == '__main__':
-    cam_arm = ESP(axis=1, testflight=True)
-    # Print all available methods
-    # import inspect
-    # print([ m for m in dir(cam_arm) if not m.startswith('__')])
-
-    # cam_arm.move_absolute(200)
+    None

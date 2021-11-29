@@ -45,8 +45,7 @@ class Cam():
             try:
                 # Connect to first available camera
                 self.instrument = uc480.UC480Camera(cam_id=0)
-                self.instrument.apply_settings(self.settings)
-                #self.instrument.setup_acquisition()
+                self.set_settings(self.settings, False)
             except OSError:
                 self.testflight = True
 
@@ -71,29 +70,14 @@ class Cam():
             tools.print_dict(settings)
             return settings
 
-    def take_images_alt(self, nframes=1, median=False, show=False):
-        if self.testflight:
-            img = self._random_image(nframes)
-        else:
-            #dump = self.instrument.snap()
-            img = self.instrument.grab(nframes)
+    def set_settings(self, settings={}, print=True):
+        if not type(settings) is dict:
+            raise TypeError('Variable "settings" should be of type dict.')
+        s = self.instrument.apply_settings(settings)
+        if print:
+            self.get_settings()
 
-        img = np.array(img).astype('uint8')
-
-        if median and nframes > 1:
-            tools.logprint('Taking median of captured images.')
-            img = np.median(img, axis=0).astype('uint8')
-
-        if show:
-            try:
-                plt.imshow(img)
-            except TypeError:  # imshow can only plot 1 image
-                plt.imshow(img[-1])  # plot last image
-            plt.show()
-
-        return img
-
-    def take_images(self, nframes=1, median=False, show=False):
+    def take_images(self, nframes=10, median=True, show=True):
         if self.testflight:
             img = self._random_image(nframes)
         else:
@@ -102,17 +86,21 @@ class Cam():
             img = self.instrument.read_multiple_images()
             self.instrument.stop_acquisition()
 
-        img = np.array(img).astype('uint8')
+        img = np.array(img)
 
         if median and nframes > 1:
-            img = np.median(img, axis=0).astype('uint8')
+            img = np.median(img, axis=0)
 
         if show:
             try:
-                plt.imshow(img)
+                maps = ['autumn','summer','winter']
+                for i in range(3):
+                    plt.imshow(img[:,:,i], cmap=maps[i])
+                    plt.colorbar()
+                    plt.show()
             except TypeError:  # imshow can only plot 1 image
-                plt.imshow(img[-1])  # plot last image
-            plt.show()
+                plt.imshow(np.sum(img[-1],axis=2))  # plot last image
+                plt.show()
 
         return img
 

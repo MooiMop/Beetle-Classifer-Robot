@@ -1,5 +1,5 @@
 import time
-
+import datetime
 
 def logprint(string, color='reset', timeout=0.5):
     colors = {
@@ -21,6 +21,33 @@ def print_dict(dict):
         print(f'{key}:  {dict[key]}')
     print('\n')
 
+TIME_FORMATS = {
+    'date': '%Y.%m.%d',
+    'time': '%H:%M',
+    'datetime': '%Y.%m.%d %H:%M',
+}
+
+def get_time(mode='str', format='datetime'):
+    time = datetime.datetime.now()
+    if mode == 'datetime':
+        return time
+    elif mode == 'str':
+        try:
+            return time.strftime(TIME_FORMATS[format])
+        except KeyError:
+            return time.strftime(format)
+
+def convert_time(time, format='datetime'):
+    if type(time) is datetime.datetime:
+        try:
+            return time.strftime(TIME_FORMATS[format])
+        except KeyError:
+            return time.strftime(format)
+    elif type(time) is str:
+        try:
+            return datetime.datetime.strptime(TIME_FORMATS[format])
+        except KeyError:
+            return datetime.datetime.strptime(format)
 
 class bcolors:
 
