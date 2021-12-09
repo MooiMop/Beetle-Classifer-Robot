@@ -2,6 +2,7 @@ import atexit
 import matplotlib.pyplot as plt
 import numpy as np
 
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pylablib.devices import uc480
 
 try:
@@ -12,7 +13,7 @@ except ModuleNotFoundError:
 
 class Cam():
 
-    def __init__(self, settings={}, testflight=False):
+    def __init__(self, name, settings={}, testflight=False):
         # Make sure the connection to the camera is shutdown when the program
         # exits. Without this, the camera must be physically unplugged each
         # time you rerun the code.
@@ -27,12 +28,11 @@ class Cam():
 
         default_settings = {
             'pixel_rate': 5e6,
-            'frame_period': 0.15,
-            'exposure': 0.15,
+            'exposure': 0.2,
+            'frame_period': 0.2,
             'gains': (1.0, 1.0, 1.0, 1.0),
             'color_mode': 'rgb8p',
-            'binning': (1, 1),
-            'roi': (400,900,300,700,1,1)
+            'roi': (0, 1280, 0, 1024, 1, 1)
         }
         default_settings.update(settings)
         self.settings = default_settings
@@ -67,7 +67,7 @@ class Cam():
             return {}
         else:
             settings = self.instrument.get_settings()
-            tools.print_dict(settings)
+            if print: tools.print_dict(settings)
             return settings
 
     def set_settings(self, settings={}, print=True):
@@ -75,14 +75,17 @@ class Cam():
             raise TypeError('Variable "settings" should be of type dict.')
         s = self.instrument.apply_settings(settings)
         if print:
-            self.get_settings()
+            self.get_settings(True)
 
-    def take_images(self, nframes=10, median=True, show=True):
+    def take_images(self, nframes=20, median=True, show=True):
         if self.testflight:
             img = self._random_image(nframes)
         else:
+            frame_period = self.instrument.get_frame_timings()[1]
+            max_TO = frame_period * 2 + 1.0
             self.instrument.start_acquisition()
-            self.instrument.wait_for_frame(nframes=nframes)
+            self.instrument.wait_for_frame(
+                nframes=nframes, timeout=(max_TO * nframes, max_TO))
             img = self.instrument.read_multiple_images()
             self.instrument.stop_acquisition()
 
@@ -91,16 +94,29 @@ class Cam():
         if median and nframes > 1:
             img = np.median(img, axis=0)
 
+        # Following lines are to ensure output is of shape [frames, x, y, 3]
+        if len(img.shape) < 4:
+            img = np.expand_dims(img, axis=0)
+
         if show:
-            try:
-                maps = ['autumn','summer','winter']
-                for i in range(3):
-                    plt.imshow(img[:,:,i], cmap=maps[i])
-                    plt.colorbar()
-                    plt.show()
-            except TypeError:  # imshow can only plot 1 image
-                plt.imshow(np.sum(img[-1],axis=2))  # plot last image
-                plt.show()
+            maps = ['autumn','summer','winter']
+            fig, ax = plt.subplots(ncols=3, figsize=(17, 5))
+            frame = img[-1]
+            for i in range(3):
+                channel = frame[:,:,i]
+                title = f'min: {int(np.min(channel))}. '\
+                        f'max: {int(np.max(channel))}.\n'\
+                        f'mean: {np.round(np.mean(channel),2)}. '\
+                        f'median: {np.round(np.median(channel),2)}.'
+                im = ax[i].imshow(channel, cmap=maps[i], origin='lower')
+                ax[i].set_title(title)
+                # Colorbar stuff
+                divider = make_axes_locatable(ax[i])
+                cax = divider.append_axes('right', size='5%', pad=0.05)
+                fig.colorbar(im, cax=cax, orientation='vertical')
+
+            fig.tight_layout()
+            plt.show()
 
         return img
 
@@ -108,8 +124,9 @@ class Cam():
         img = []
         for frame in range(nframes):
             x = y = np.linspace(-5, 5, 500)
-            X, Y = np.meshgrid(x, y)
-            noise = np.random.random((500, 500)) - 0.5
+            z = [1, 1, 1]
+            X, Y, Z = np.meshgrid(x, y, z)
+            noise = np.random.random((500, 500, 3)) - 0.5
             f = np.sinc(np.hypot(X, Y)) + noise
             img.append(f)
 
@@ -131,6 +148,6 @@ if __name__ == '__main__':
     cam.shutdown()'''
 
     cam = Cam()
-    tools.print_dict(cam.instrument.get_full_info())
+    #tools.print_dict(cam.instrument.get_full_info())
     #cam.get_settings()
-    img = cam.take_images(10, show=True, median=True)
+    img = cam.take_images(5, show=True, median=True)

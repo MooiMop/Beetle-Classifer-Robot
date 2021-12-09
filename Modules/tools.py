@@ -1,7 +1,7 @@
 import time
 import datetime
 
-def logprint(string, color='reset', timeout=0.5):
+def logprint(string, color='reset', timeout=0):
     colors = {
         'green': '\033[92m',
         'yellow': '\033[93m',

@@ -1,3 +1,4 @@
+import time
 import pyvisa
 import atexit
 from sys import platform
@@ -10,20 +11,22 @@ except ModuleNotFoundError:
 class ESP():
     READ_TERMINATION = '\r'
     WRITE_TERMINATION = '\r'
-    TIMEOUT = 600000  # milliseconds
+    TIMEOUT = 60000  # milliseconds
 
 
-    def __init__(self, identifiers: list, testflight=False):
+    def __init__(self, name, identifiers: list, testflight=False):
         self.testflight = testflight
 
         if testflight:
             tools.logprint(f'Initializing {tools.bcolors.yellow("fictional")} '
                            'connection with ESP.')
+            self.instruments = ['fake instrument'] * len(identifiers)
 
         elif platform != "win32":
             tools.logprint('Not running on Windows platform. Turning on '
                            'testflight mode.', 'yellow')
             self.testflight = True
+            self.instruments = ['fake instrument'] * len(identifiers)
 
         else:
             self.rm = pyvisa.ResourceManager()
@@ -33,14 +36,14 @@ class ESP():
     def list_devices(self):
         if not self.testflight:
             devices = self.rm.list_resources()
-            print('Resource manager used:       ',self.rm)
-            print('Detected devices:          ',devices)
+            tools.logprint(f'Resource manager used:     {self.rm}')
+            tools.logprint(f'Detected devices:          {devices}')
             return devices
 
     def connect(self, identifiers, devices):
         if not self.testflight:
             tools.logprint('Initializing new connections with ESP '
-                           f'with identifiers {identifiers}.')
+                           f'with identifiers:      {identifiers}.')
 
             instruments = []
             for identifier in identifiers:
@@ -54,7 +57,6 @@ class ESP():
                     instrument.read_termination = self.READ_TERMINATION
                     instrument.write_termination = self.WRITE_TERMINATION
                     instrument.timeout = self.TIMEOUT
-
                     instruments.append(instrument)
 
                 else:
@@ -63,7 +65,8 @@ class ESP():
             return instruments
 
     def shutdown(self):
-        self.instrument.close()
+        for instrument in self.instruments:
+            instrument.close()
         self.rm.close()
 
 
@@ -87,7 +90,8 @@ class Motor():
         '37': 'AXIS NUMBER MISSING',
         '38': 'COMMAND PARAMETER MISSING'
     }
-    def __init__(self, device, axis, MAX_POSITION=[-180, 180], velocity=4,
+
+    def __init__(self, name, instrument, axis, bounds=[-180, 180], velocity=4,
                  testflight=False):
 
         # Convert supplied parameters to their 'self' equivalents.
@@ -97,7 +101,7 @@ class Motor():
         if testflight:
             self.current_position = 0.0
         else:
-            self.instrument = self.device.instrument
+            #self.instrument = self.device
             self.send_command('set velocity', velocity)
             self.send_command('set home search mode', 0)
 
@@ -107,7 +111,7 @@ class Motor():
               f' {self.get_current_position()} as {degrees}.')
         choice = input('Are you sure you want to make this change? (Y/N)')
         if choice in ['Y', 'y']:
-            if self.send_command('define home'):
+            if self.send_command('define home', degrees):
                 tools.logprint('New home position saved.', 'green')
             else:
                 tools.logprint('Failed to set new home position.', 'red')
@@ -127,7 +131,7 @@ class Motor():
         elif mode == 'relative':
             new_position = self.get_current_position() + degrees
 
-        allowed = self.MAX_POSITION[0] <= new_position <= self.MAX_POSITION[1]
+        allowed = self.bounds[0] <= new_position <= self.bounds[1]
         if allowed:
             if verbose: tools.logprint(f'Moving axis {self.axis} to position '
                                        f'{new_position} degrees.')
@@ -158,41 +162,55 @@ class Motor():
         if self.testflight:
             return True
         else:
+            time.sleep(2)
             full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
             if 'move' in command:
                 wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
                 full_command += ';' + wait
-            self.instrument.write(full_command)
-            err = self.instrument.query(self.COMMANDS['read error code'])
+
+            try:
+                self.instrument.query(self.COMMANDS['read error code'])
+                self.instrument.write(full_command)
+                err = self.instrument.query(self.COMMANDS['read error code'])
+            except pyvisa.VisaIOError:
+                tools.logprint('Got a VisaIOError, trying again.', 'red')
+                self.instrument.write(full_command)
+                err = self.instrument.query(self.COMMANDS['read error code'])
+
             if err[0] == str(self.axis) and len(err) > 2:
                 err = err[1:]
             if err != '0':
                 if err in self.ERROR_CODES:
                     tools.logprint(
-                        f'Error code {err}: {self.ERROR_CODES[err]}', 'red')
+                        f'Error code {err}: {self.ERROR_CODES[err]} on device '
+                        f'"{self.name}" while executing command '
+                        f'"{full_command}".','red')
                 else:
-                    tools.logprint(f'Error code {err}', 'red')
+                    tools.logprint(f'Error code {err} on device {self.name}.', 'red')
                 return False
             else:
                 return True
 
+
+
 class Polarizer():
 
-    def __init__(self, dev1, dev2, ax1, ax2, MAX_POSITION=[-180, 180],
+    def __init__(self, name, inst1, inst2, ax1, ax2, bounds=[-410, 410],
                  velocity=20, testflight=False):
         ''' 1 is linear polarizer, 2 is lambda/4 plate
         '''
 
-        self.lin_polarizer = Motor(dev1, ax1, MAX_POSITION, velocity, testflight)
-        self.quart_lambda = Motor(dev2, ax2, MAX_POSITION, velocity, testflight)
+        self.lin_polarizer = Motor('linear polarizer', inst1, ax1, bounds, velocity, testflight)
+        self.quart_lambda = Motor('quarter wave plate', inst2, ax2, bounds, velocity, testflight)
 
     def set(self, degrees, verbose=True):
         '''Hardware definitions:
-        linear polarizer: 0 degrees = vertical
+        linear polarizer: 0 degrees = vertical / S / Perpendicular
         lambda/4 plate: 0 degrees = horizontal
         '''
         self.lin_polarizer.move(degrees, 'absolute', verbose)
-        self.quart_lambda.move(degrees + 45, 'absolute', verbose)
+        p = self.lin_polarizer.get_current_position()
+        self.quart_lambda.move(p + 45, 'absolute', verbose)
 
 
 if __name__ == '__main__':

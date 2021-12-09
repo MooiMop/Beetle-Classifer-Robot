@@ -11,41 +11,42 @@ except ModuleNotFoundError:
 
 class HDF5():
 
-    def __init__(self, filename, mode, author=None, date=True, metadata={},
+    def __init__(self, filename, mode, user=None, date=True, metadata={},
                  verbose=True):
 
         if not '.hdf5' in filename:
             filename += '.hdf5'
 
+        if date:
+            # Check if filename already start with date
+            try:
+                # if these lines doesn't raise an error, the filename starts
+                # with a date
+                test = filename[0:10]
+                datetime.datetime.strptime(test, '%Y.%m.%d')
+            except ValueError:
+                filename = tools.get_time(format='date') + ' ' + filename
+
         if mode == 'create':
-            if date:
-                # Check if filename already start with date
-                try:
-                    # if these lines doesn't raise an error, the filename starts
-                    # with a date
-                    test = filename[0:10]
-                    datetime.datetime.strptime(test, '%Y.%m.%d')
-                except ValueError:
-                    filename = tools.get_time(format='date') + ' ' + filename
             try:
                 self.file = h5py.File(filename, 'x')
-                if not author is None:
-                    self.write_metadata(self.file, {'Author':author})
+                if not user is None:
+                    HDF5.write_metadata(self.file, {'user':user})
                 if len(metadata) > 0:
-                    self.write_metadata(self.file, metadata)
+                    HDF5.write_metadata(self.file, metadata)
                 if verbose:
                     tools.logprint('Created file ' + tools.bcolors.blue(filename))
-            except FileExistsError:
+            except (FileExistsError, OSError):
                 tools.logprint(f'File {filename} already exists. Opening '
                                'instead.', 'yellow')
                 mode = 'open'
-                
-        elif mode == 'open':
+
+        if mode == 'open':
             self.file = h5py.File(filename, 'r+')
             if verbose:
                 tools.logprint('Opened file ' + tools.bcolors.blue(filename))
 
-        else:
+        elif mode != 'create':
             raise ValueError(f'mode parameter should be "open" or "create".')
 
         self.name = filename
@@ -78,12 +79,12 @@ class HDF5():
                 name += ' ' + str(n)
                 group = object.create_group(name)
 
-        self.write_metadata(group, metadata)
+        HDF5.write_metadata(group, metadata)
         tools.logprint('Created HDF5 group ' + tools.bcolors.blue(name))
         return group
 
     def create_dataset(self, name, data, parent=None, metadata={},
-                       overwrite=True):
+                       overwrite=True, verbose=True):
         if parent is None:
             object = self.file
         else:
@@ -92,23 +93,24 @@ class HDF5():
         if type(data) is tuple:
             dataset = object.create_dataset(name, data, compression="gzip",
                                             maxshape=(None, *data[1:]))
-            self.write_metadata(dataset, metadata)
+            HDF5.write_metadata(dataset, metadata)
         else:
             try:
                 shape = np.shape(data)
                 dataset = object.create_dataset(
                     name, data=data, compression="gzip",
                     maxshape=(None, *shape[1:]))
-                self.write_metadata(dataset, metadata)
+                HDF5.write_metadata(dataset, metadata)
             except ValueError:
                 if overwrite:
                     if verbose:
                         tools.logprint('Waring: dataset already exists, '
                                        'will overwrite.', 'yellow')
                     del object[name]
-                    dataset = object.create_dataset(
-                        name, data=data, compression="gzip")
-                    self.write_metadata(dataset, metadata)
+                    shape = np.shape(data)
+                    dataset = object.create_dataset(name, data=data, compression="gzip",
+                                                    maxshape=(None, *shape[1:]))
+                    HDF5.write_metadata(dataset, metadata)
                 else:
                     if verbose:
                         tools.logprint('Waring: dataset already exists, '
@@ -125,7 +127,7 @@ class HDF5():
         dataset.resize(total, axis=0)
         dataset[current:total] = new_data
 
-    def write_metadata(self, object, metadata):
+    def write_metadata(object, metadata):
         if not type(metadata) is dict:
             raise TypeError('Variable "settings" should be of type dict.')
 
