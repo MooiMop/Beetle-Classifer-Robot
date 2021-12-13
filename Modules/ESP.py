@@ -1,6 +1,5 @@
 import time
 import pyvisa
-import atexit
 from sys import platform
 
 try:
@@ -8,11 +7,11 @@ try:
 except ModuleNotFoundError:
     import tools
 
+
 class ESP():
     READ_TERMINATION = '\r'
     WRITE_TERMINATION = '\r'
     TIMEOUT = 60000  # milliseconds
-
 
     def __init__(self, name, identifiers: list, testflight=False):
         self.testflight = testflight
@@ -31,7 +30,6 @@ class ESP():
         else:
             self.rm = pyvisa.ResourceManager()
             self.instruments = self.connect(identifiers, self.list_devices())
-            atexit.register(self.shutdown)
 
     def list_devices(self):
         if not self.testflight:
@@ -64,10 +62,13 @@ class ESP():
                                    'red')
             return instruments
 
-    def shutdown(self):
-        for instrument in self.instruments:
-            instrument.close()
-        self.rm.close()
+    def __del__(self):
+        if not self.testflight:
+            for instrument in self.instruments:
+                tools.logprint(f'Disconnecting {instrument}', 'yellow')
+                instrument.close()
+            tools.logprint(f'Disconnecting resource manager', 'yellow')
+            self.rm.close()
 
 
 class Motor():
@@ -101,7 +102,6 @@ class Motor():
         if testflight:
             self.current_position = 0.0
         else:
-            #self.instrument = self.device
             self.send_command('set velocity', velocity)
             self.send_command('set home search mode', 0)
 
@@ -133,8 +133,9 @@ class Motor():
 
         allowed = self.bounds[0] <= new_position <= self.bounds[1]
         if allowed:
-            if verbose: tools.logprint(f'Moving axis {self.axis} to position '
-                                       f'{new_position} degrees.')
+            if verbose:
+                tools.logprint(f'Moving axis {self.axis} to position '
+                               f'{new_position} degrees.')
             self.send_command('move to absolute position', new_position)
         else:
             tools.logprint(f'Desired position {new_position} is out of '
@@ -162,7 +163,7 @@ class Motor():
         if self.testflight:
             return True
         else:
-            time.sleep(2)
+            time.sleep(0.5)
             full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
             if 'move' in command:
                 wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
@@ -173,7 +174,9 @@ class Motor():
                 self.instrument.write(full_command)
                 err = self.instrument.query(self.COMMANDS['read error code'])
             except pyvisa.VisaIOError:
-                tools.logprint('Got a VisaIOError, trying again.', 'red')
+                tools.logprint(
+                    f'Got a VisaIOError on device "{self.name}" while '
+                    f' executing command "{full_command}".', 'red')
                 self.instrument.write(full_command)
                 err = self.instrument.query(self.COMMANDS['read error code'])
 
@@ -184,13 +187,14 @@ class Motor():
                     tools.logprint(
                         f'Error code {err}: {self.ERROR_CODES[err]} on device '
                         f'"{self.name}" while executing command '
-                        f'"{full_command}".','red')
+                        f'"{full_command}".', 'red')
                 else:
-                    tools.logprint(f'Error code {err} on device {self.name}.', 'red')
+                    tools.logprint(
+                        f'Error code {err} on device {self.name}.',
+                        'red')
                 return False
             else:
                 return True
-
 
 
 class Polarizer():
@@ -200,8 +204,10 @@ class Polarizer():
         ''' 1 is linear polarizer, 2 is lambda/4 plate
         '''
 
-        self.lin_polarizer = Motor('linear polarizer', inst1, ax1, bounds, velocity, testflight)
-        self.quart_lambda = Motor('quarter wave plate', inst2, ax2, bounds, velocity, testflight)
+        self.lin_polarizer = Motor(
+            'linear polarizer', inst1, ax1, bounds, velocity, testflight)
+        self.quart_lambda = Motor(
+            'quarter wave plate', inst2, ax2, bounds, velocity, testflight)
 
     def set(self, degrees, verbose=True):
         '''Hardware definitions:

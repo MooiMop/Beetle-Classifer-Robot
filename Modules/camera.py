@@ -14,13 +14,6 @@ except ModuleNotFoundError:
 class Cam():
 
     def __init__(self, name, settings={}, testflight=False):
-        # Make sure the connection to the camera is shutdown when the program
-        # exits. Without this, the camera must be physically unplugged each
-        # time you rerun the code.
-        # WARNING: does not (currently) work with Jupyter notebook yet.
-        # Please manually call Cam.shutdown()
-        atexit.register(self.shutdown)
-
         # Convert supplied parameters to their 'self' equivalents.
         for key in dir():
             if 'self' not in key:
@@ -49,11 +42,6 @@ class Cam():
             except OSError:
                 self.testflight = True
 
-    def shutdown(self):
-        tools.logprint('Disconnecting camera', 'yellow')
-        if not self.testflight:
-            self.instrument.close()
-
     def check_connection(self):
         if self.instrument.is_opened():
             tools.logprint('Camera is connected.', 'green')
@@ -67,7 +55,8 @@ class Cam():
             return {}
         else:
             settings = self.instrument.get_settings()
-            if print: tools.print_dict(settings)
+            if print:
+                tools.print_dict(settings)
             return settings
 
     def set_settings(self, settings={}, print=True):
@@ -99,15 +88,15 @@ class Cam():
             img = np.expand_dims(img, axis=0)
 
         if show:
-            maps = ['autumn','summer','winter']
+            maps = ['autumn', 'summer', 'winter']
             fig, ax = plt.subplots(ncols=3, figsize=(17, 5))
             frame = img[-1]
             for i in range(3):
-                channel = frame[:,:,i]
-                title = f'min: {int(np.min(channel))}. '\
-                        f'max: {int(np.max(channel))}.\n'\
-                        f'mean: {np.round(np.mean(channel),2)}. '\
-                        f'median: {np.round(np.median(channel),2)}.'
+                channel = frame[:, :, i]
+                title = (f'min: {int(np.min(channel))}. '
+                         + f'max: {int(np.max(channel))}.\n'
+                         + f'mean: {np.round(np.mean(channel),2)}. '
+                         + f'median: {np.round(np.median(channel),2)}.')
                 im = ax[i].imshow(channel, cmap=maps[i], origin='lower')
                 ax[i].set_title(title)
                 # Colorbar stuff
@@ -132,22 +121,15 @@ class Cam():
 
         return(img)
 
+    def __del__(self):
+        tools.logprint('Disconnecting camera', 'yellow')
+        if not self.testflight:
+            self.instrument.close()
+
 
 if __name__ == '__main__':
 
-
-    '''cam = Cam()
-    print(cam.instrument.get_all_color_modes())
-    print(cam.instrument.get_available_pixel_rates())
-    print(cam.instrument.get_acquisition_parameters())
-
-    img = cam.take_images(10, show=False, median=False)
-    for im in img:
-        plt.imshow(im)
-        plt.show()
-    cam.shutdown()'''
-
     cam = Cam()
-    #tools.print_dict(cam.instrument.get_full_info())
-    #cam.get_settings()
+    tools.print_dict(cam.instrument.get_full_info())
+    cam.get_settings()
     img = cam.take_images(5, show=True, median=True)

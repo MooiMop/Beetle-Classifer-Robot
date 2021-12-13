@@ -1,6 +1,7 @@
 import time
 import datetime
 
+
 def logprint(string, color='reset', timeout=0):
     colors = {
         'green': '\033[92m',
@@ -21,11 +22,13 @@ def print_dict(dict):
         print(f'{key}:  {dict[key]}')
     print('\n')
 
+
 TIME_FORMATS = {
     'date': '%Y.%m.%d',
     'time': '%H:%M',
     'datetime': '%Y.%m.%d %H:%M',
 }
+
 
 def get_time(mode='str', format='datetime'):
     time = datetime.datetime.now()
@@ -36,6 +39,7 @@ def get_time(mode='str', format='datetime'):
             return time.strftime(TIME_FORMATS[format])
         except KeyError:
             return time.strftime(format)
+
 
 def convert_time(time, format='datetime'):
     if type(time) is datetime.datetime:
@@ -48,6 +52,7 @@ def convert_time(time, format='datetime'):
             return datetime.datetime.strptime(TIME_FORMATS[format])
         except KeyError:
             return datetime.datetime.strptime(format)
+
 
 class bcolors:
 

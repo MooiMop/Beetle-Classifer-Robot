@@ -1,7 +1,6 @@
 import h5py
 import re
 import datetime
-import atexit
 import numpy as np
 
 try:
@@ -9,12 +8,13 @@ try:
 except ModuleNotFoundError:
     import tools
 
+
 class HDF5():
 
     def __init__(self, filename, mode, user=None, date=True, metadata={},
                  verbose=True):
 
-        if not '.hdf5' in filename:
+        if'.hdf5' not in filename:
             filename += '.hdf5'
 
         if date:
@@ -30,12 +30,12 @@ class HDF5():
         if mode == 'create':
             try:
                 self.file = h5py.File(filename, 'x')
-                if not user is None:
-                    HDF5.write_metadata(self.file, {'user':user})
+                if user is not None:
+                    HDF5.write_metadata(self.file, {'user': user})
                 if len(metadata) > 0:
                     HDF5.write_metadata(self.file, metadata)
                 if verbose:
-                    tools.logprint('Created file ' + tools.bcolors.blue(filename))
+                    tools.logprint(f'Created file {filename}', 'blue')
             except (FileExistsError, OSError):
                 tools.logprint(f'File {filename} already exists. Opening '
                                'instead.', 'yellow')
@@ -51,48 +51,30 @@ class HDF5():
 
         self.name = filename
 
-        # Make sure file is properly closed upon script exit.
-        atexit.register(self.close)
-
-    def close(self):
-        self.file.close()
-
-    def create_group(self, name, parent=None, metadata={}, overwrite=False):
-        if parent is None:
-            object = self.file
-        else:
-            object = self.file[parent]
-
+    def group(self, name, parent=None, metadata={}):
+        object = self._get_parent(parent)
         try:
+            group = object[name]
+        except KeyError:
             group = object.create_group(name)
-        except ValueError:
-            if overwrite:
-                tools.logprint('Waring: group already exists, will overwrite.',
-                               'yellow')
-                del object[name]
-                group = object.create_group(name)
-            else:
-                # Calculate number of matching names and add that number + 1
-                # to original name.
-                text = ' _ '.join(self.file.keys())
-                n = len(re.findall(f'{name}*', text))
-                name += ' ' + str(n)
-                group = object.create_group(name)
-
-        HDF5.write_metadata(group, metadata)
+            HDF5.write_metadata(group, metadata)
         tools.logprint('Created HDF5 group ' + tools.bcolors.blue(name))
         return group
 
     def create_dataset(self, name, data, parent=None, metadata={},
                        overwrite=True, verbose=True):
-        if parent is None:
-            object = self.file
-        else:
-            object = self.file[parent]
+        object = self._get_parent(parent)
+
+        # Check if name already exists and if so add iterator
+        if not overwrite:
+            items = ' _ '.join(object.keys())
+            n = len(re.findall(name, items))
+            name += ' ' + str(n)
 
         if type(data) is tuple:
-            dataset = object.create_dataset(name, data, compression="gzip",
-                                            maxshape=(None, *data[1:]))
+            dataset = object.create_dataset(
+                name, data, compression="gzip",
+                maxshape=(None, *data[1:]))
             HDF5.write_metadata(dataset, metadata)
         else:
             try:
@@ -108,8 +90,9 @@ class HDF5():
                                        'will overwrite.', 'yellow')
                     del object[name]
                     shape = np.shape(data)
-                    dataset = object.create_dataset(name, data=data, compression="gzip",
-                                                    maxshape=(None, *shape[1:]))
+                    dataset = object.create_dataset(
+                        name, data=data, compression="gzip",
+                        maxshape=(None, *shape[1:]))
                     HDF5.write_metadata(dataset, metadata)
                 else:
                     if verbose:
@@ -136,5 +119,18 @@ class HDF5():
 
     def read_metadata(object, print=True):
         metadata = dict(object.attrs)
-        if print: tools.print_dict(metadata)
+        if print:
+            tools.print_dict(metadata)
         return metadata
+
+    def _get_parent(self, parent):
+        if parent is None:
+            return self.file
+        else:
+            return self.file[parent]
+
+    def __name__(self):
+        return self.name
+
+    def __del__(self):
+        self.file.close()
