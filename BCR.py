@@ -97,6 +97,70 @@ class BCR():
             exec(command)
 
     # ~~~ Experiment sequences ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def beetle_polarization(self, mode, bounds, step_size, readme,
+                 filter=None, pol_steps=16, name='Beetle Hyperspectral',
+                 path='Experiments\Beetle Hyperspectral', metadata={},
+                 **kwargs):
+
+        hierarchy = 'One group per filter. Each group has N '\
+                    'datasets of shape [positions,polarizer_angles,x,y,3], '\
+                    'with N being set by parameter "repeats". '\
+                    'Positions and angle_polarizer (in degrees) embedded as '\
+                    'list in metadata of dataset with keys "positions" and '\
+                    '"angle_polarizer".'
+        metadata['bounds'] = bounds
+        metadata['step_size'] = step_size
+        metadata['sample_angle'] = self.sample.get_current_position()
+        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        high_level_keys = ['hierarchy', 'polarization_definition', 'readme',
+            'sample_angle', 'software_version', 'user']
+        m_high_level =  {k: v for k, v in m.items() if k in high_level_keys}
+        m_low_level =  {k: v for k, v in m.items() if k not in high_level_keys}
+
+        # Prepare savefile
+        if mode == 'create':
+            f = HDF5(name, 'create', self.user, True, m_high_level)
+        elif mode == 'add':
+            f = HDF5(name, 'open')
+        if filter is None:
+            filter = 'No filter'
+        parent = filter
+        # Check if hdf5 file contains 'parent' groups and otherwise create them
+        group = f.group(parent, metadata=m_low_level)
+
+        if dark:
+            self._get_dark_frame(f, parent)
+
+        # Start measurement
+        tools.logprint('Starting measurement.')
+        positions = np.arange(bounds[0], bounds[1] + step_size, step_size)
+        polarizer_angles = np.round(np.linspace(0, 180, pol_steps), 2)
+        try:
+            self.polarizer.lin_polarizer.move(90, 'absolute', verbose)
+            for repeat in tqdm(range(repeats)):
+                for index, position in enumerate(positions):
+                    self.big_arm.move(-90 + position, 'absolute', verbose)
+                    img = []
+                    for angle in polarizer_angles:
+                        self.polarizer.quart_lambda.move(
+                            angle, 'absolute', verbose)
+                        img.append(
+                            self.cam.take_images(nframes, median, show)[0])
+                    img = np.array(img)
+                    img = img[np.newaxis, :]
+                    if index == 0:  # Create empty dataset with metadata
+                        m = self.cam.get_settings(print=False)
+                        m['positions'] = positions
+                        m['polarizer_angles'] = polarizer_angles
+                        dset = f.create_dataset('Frames', img, parent, m)
+                    else:
+                        HDF5.append_dataset(dset, img)
+            tools.logprint('Measurement sequence completed!', 'green')
+        except KeyboardInterrupt:
+            choice = input('Delete uncompleted measurement run? (y/N)')
+            if choice in ['y', 'Y']:
+                del f.file[dset.name]
+
     def brewster(self, mode, polarization, bounds, step_size, readme,
                  filter=None, name='Brewster',
                  path='Experiments\\Brewster Angle', metadata={}, **kwargs):
@@ -189,7 +253,7 @@ class BCR():
                     if index == 0:
                         m = self.cam.get_settings(print=False)
                         m['positions'] = [position]
-                        dset = f.create_dataset('Frames', img, None, m)
+                        dset = f.create_dataset('Frames', img, None, m, overwrite, verbose)
                     else:
                         HDF5.append_dataset(dset, img)
                         old_pos = dset.attrs['positions']
@@ -244,7 +308,7 @@ class BCR():
                 if step == 0:
                     m = self.cam.get_settings(print=False)
                     m['timestamps'] = [timestamp]
-                    dset = f.create_dataset('Frames', img, None, m)
+                    dset = f.create_dataset('Frames', img, None, m, overwrite, verbose)
                 else:
                     HDF5.append_dataset(dset, img)
                     t = dset.attrs['timestamps']
@@ -286,7 +350,7 @@ class BCR():
                     if index == 0:
                         m = self.cam.get_settings(print=False)
                         m['positions'] = [position]
-                        dset = f.create_dataset('Frames', img, None, m)
+                        dset = f.create_dataset('Frames', img, None, m, overwrite, verbose)
                     else:
                         HDF5.append_dataset(dset, img)
                         old_pos = dset.attrs['positions']
@@ -319,7 +383,7 @@ class BCR():
             for repeat in tqdm(range(repeats)):
                 img = self.cam.take_images(nframes, False, False)
                 m = self.cam.get_settings(print=False)
-                dset = f.create_dataset('Frames', img, None, m)
+                dset = f.create_dataset('Frames', img, None, m, overwrite, verbose)
                 time.sleep(dt)
             tools.logprint('Measurement sequence completed!', 'green')
         except KeyboardInterrupt:
@@ -354,7 +418,8 @@ class BCR():
             'nframes': nframes,
             'readme': readme,
             'repeats': repeats,
-            'polarization_definition': '0 is vertical (S) polarization',
+            'polarization_definition': 'linear polarizer: 0 is vertical '
+            + 'quarter lambda plate: 0 is horizontal fast axis.',
             'software_verion': __version__,
         }
         metadata = default_metadata | metadata

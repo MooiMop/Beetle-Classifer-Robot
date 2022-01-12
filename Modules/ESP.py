@@ -123,10 +123,7 @@ class Motor():
             return float(self.instrument.query(str(self.axis)+'TP?')[:-1])
 
     def move(self, degrees, mode='relative', verbose=True):
-        if mode == 'home':
-            self.send_command('search for home')
-            return None
-        elif mode == 'absolute':
+        if mode == 'absolute':
             new_position = degrees
         elif mode == 'relative':
             new_position = self.get_current_position() + degrees
@@ -163,23 +160,16 @@ class Motor():
         if self.testflight:
             return True
         else:
-            time.sleep(0.5)
+            time.sleep(1)
             full_command = f'{self.axis}{self.COMMANDS[command]}{parameter}'
             if 'move' in command:
                 wait = f'{self.axis}{self.COMMANDS["wait for motion stop"]}0'
                 full_command += ';' + wait
 
-            try:
-                self.instrument.query(self.COMMANDS['read error code'])
-                self.instrument.write(full_command)
-                err = self.instrument.query(self.COMMANDS['read error code'])
-            except pyvisa.VisaIOError:
-                tools.logprint(
-                    f'Got a VisaIOError on device "{self.name}" while '
-                    f' executing command "{full_command}".', 'red')
-                self.instrument.write(full_command)
-                err = self.instrument.query(self.COMMANDS['read error code'])
-
+            self.write_command(full_command)
+            err = self.query_command(self.COMMANDS['read error code'])
+            # remove first number from error code if the first number is the
+            # same as the axis number.
             if err[0] == str(self.axis) and len(err) > 2:
                 err = err[1:]
             if err != '0':
@@ -196,6 +186,36 @@ class Motor():
             else:
                 return True
 
+    def write_command(self, command, attempt=1):
+        try:
+            self.instrument.write(command)
+        except pyvisa.VisaIOError:
+            tools.logprint(
+                f'Got a VisaIOError on device "{self.name}" while '
+                f' executing command "{command}" (attempt {attempt}).',
+                'red')
+            if attempt < 3:
+                self.write_command(command, attempt=attempt + 1)
+            else:
+                tools.logprint('Three attempts failed. Will continue with '
+                               'next command.', 'red')
+                return 'VisaIOError'
+
+    def query_command(self, command, attempt=1):
+        try:
+            output = self.instrument.query(command)
+        except pyvisa.VisaIOError:
+            tools.logprint(
+                f'Got a VisaIOError on device "{self.name}" while '
+                f' executing command "{command}" (attempt {attempt}).',
+                'red')
+            if attempt < 3:
+                output = self.query_command(command, attempt=attempt + 1)
+            else:
+                tools.logprint('Three attempts failed. Will continue with '
+                               'next command.', 'red')
+                return 'VisaIOError'
+        return output
 
 class Polarizer():
 

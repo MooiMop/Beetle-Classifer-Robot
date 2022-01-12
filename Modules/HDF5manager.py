@@ -62,7 +62,7 @@ class HDF5():
         return group
 
     def create_dataset(self, name, data, parent=None, metadata={},
-                       overwrite=True, verbose=True):
+                       overwrite=False, verbose=True):
         object = self._get_parent(parent)
 
         # Check if name already exists and if so add iterator

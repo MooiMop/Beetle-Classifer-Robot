@@ -1,8 +1,6 @@
 # Beetle Classifier Robot
 
-- *Author* Naor Scheinowitz
-- *Version* 0.6
-- *Last edit* 2021-11-29
+*Author* Naor Scheinowitz
 
 ## Introduction
 
@@ -47,3 +45,4 @@ Navigate to this folder through your terminal of choice and start a *Jupyter Not
 | pylablib | Interfacing with the ThorLabs camera through Python | [Basics](https://pylablib.readthedocs.io/en/latest/devices/cameras_basics.html)[Docs](https://pylablib.readthedocs.io/en/latest/devices/uc480.html#cameras-uc480) [Commands](https://pylablib.readthedocs.io/en/latest/.apidoc/pylablib.devices.uc480.html) [VISA](https://pylablib.readthedocs.io/en/latest/devices/generic_awgs.html?highlight=VISA)
 | ThorCam | Driver necessary for operating camera | [Driver](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam) |
 | h5py | data storage interface HDF5 | [Docs](https://docs.h5py.org/en/latest/build.html)
+| HDFView | Useful tool for opening hdf5 files in a gui | [install](https://confluence.hdfgroup.org/display/support/Download+HDFView)
