@@ -31,7 +31,7 @@ Start by installing [ThorCam](https://www.thorlabs.com/software_pages/ViewSoftwa
 ```
 conda create --name BCR
 conda activate BCR
-conda install matplotlib jupyter pip h5py
+conda install matplotlib jupyter pip h5py tqdm
 conda install -c conda-forge pylablib
 pip install pyvisa pyvisa-py
 ```

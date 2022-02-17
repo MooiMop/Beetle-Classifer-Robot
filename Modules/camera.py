@@ -41,9 +41,14 @@ class Cam():
             except OSError:
                 self.testflight = True
 
+    def restart(self):
+        if not self.testflight:
+            self.instrument.close()
+            self.__init__()
+
     def auto_expose(self, E_start=0.01, target=220, margin=20, show=True):
         E_min = 0.0001  # shortest possible exposure (in seconds)
-        E_max = 5.0
+        E_max = 10.0
         E = E_start
         dE = 1
         p_min = np.round(1 / 30, 3)  # camera can only go as low as 0.5 fps
@@ -96,18 +101,19 @@ class Cam():
         else:
             if mode not in valid_modes:
                 raise ValueError(f'Mode should be in {valid_modes}.')
-            elif mode == 'reset':
-                roi = (0, xmax, 0, ymax, 1, 1)
-            elif mode == 'peak':
-                testframe = self.take_images(10, True, False)
+            roi = (0, xmax, 0, ymax, 1, 1)
+            self.set_settings({'roi': roi}, False)
+            if mode == 'peak':
+                testframe = self.take_images(3, True, False)[0]
                 index = np.unravel_index(
                     testframe.argmax(), testframe.shape)
                 roi = (index[0]-width, index[0]+width,
                        index[1]-width, index[1]+width,
                        1, 1)
                 roi = np.clip(roi, 0, [xmax, xmax, ymax, ymax, 1, 1])
-            self.set_settings({'roi': roi}, False)
-            tools.logprint(f'ROI set to {roi}.')
+                roi = tuple(roi)
+                self.set_settings({'roi': roi}, False)
+                tools.logprint(f'ROI set to {roi}.')
             if show:
                 self.take_images(5, True, True)
 

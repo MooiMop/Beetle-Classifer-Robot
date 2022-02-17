@@ -2,6 +2,7 @@ import h5py
 import re
 import datetime
 import numpy as np
+from tqdm import tqdm
 
 try:
     import Modules.tools as tools
@@ -11,7 +12,7 @@ except ModuleNotFoundError:
 
 class HDF5():
 
-    def __init__(self, filename, mode, user=None, date=True, metadata={},
+    def __init__(self, filename, mode, user=None, date=False, metadata={},
                  verbose=True):
 
         if'.hdf5' not in filename:
@@ -40,6 +41,11 @@ class HDF5():
                 tools.logprint(f'File {filename} already exists. Opening '
                                'instead.', 'yellow')
                 mode = 'open'
+            except BlockingIOError:
+                tools.logprint(
+                    'Cannot open HDF5 file as it is open somewhere.',
+                    'red')
+                exit()
 
         if mode == 'open':
             self.file = h5py.File(filename, 'r+')
@@ -50,15 +56,19 @@ class HDF5():
             raise ValueError(f'mode parameter should be "open" or "create".')
 
         self.name = filename
+        self.filename = filename
+        self.verbose = verbose
 
+    # Core functions
     def group(self, name, parent=None, metadata={}):
         object = self._get_parent(parent)
         try:
             group = object[name]
+            tools.logprint('Opened HDF5 group ' + tools.bcolors.blue(name))
         except KeyError:
             group = object.create_group(name)
             HDF5.write_metadata(group, metadata)
-        tools.logprint('Created HDF5 group ' + tools.bcolors.blue(name))
+            tools.logprint('Created HDF5 group ' + tools.bcolors.blue(name))
         return group
 
     def create_dataset(self, name, data, parent=None, metadata={},
@@ -103,12 +113,64 @@ class HDF5():
 
         return dataset
 
+    # Useful supplementary functions
     def append_dataset(dataset, new_data):
         current = dataset.shape[0]
         new = new_data.shape[0]
         total = current + new
         dataset.resize(total, axis=0)
         dataset[current:total] = new_data
+
+    def combine_datasets(self, parent=None, keyword='Frames'):
+        tools.logprint(
+            f'Combining datasets with name {keyword} to single dataset.')
+        object = self._get_parent(parent)
+        datasets = ''.join(object.keys())
+        valid = re.findall(keyword + ' \d', datasets)
+        for index, dataset in enumerate(tqdm(valid)):
+            dset = object[dataset]
+            data = dset[:]
+            data = np.expand_dims(data, axis=0)
+            if index == 0:
+                metadata = HDF5.read_metadata(dset, False)
+                dset_combined = self.create_dataset(
+                    keyword + ' combined',
+                    data,
+                    parent,
+                    metadata=metadata,
+                    overwrite=True)
+            else:
+                HDF5.append_dataset(dset_combined, data)
+
+    def contains_key(self, key: str) -> bool:
+        keys = HDF5.allkeys(self.file)
+        keys = ' _ '.join(keys)
+        return key in keys
+
+    def print_structure(self):
+        print('\nFile metadata:')
+        for m in self.file.attrs:
+            print(f'{m}:  {self.file.attrs[m]}')
+
+        print('\nGroups:')
+        for key in self.file.keys():
+            print(key)
+
+        grps = list(self.file.keys())
+        for grp in grps:
+            print(f'\nDatasets of group "{grp}":')
+            for key in self.file[grp].keys():
+                print(key)
+
+        print(f'\nMetadata of group "{grp}":')
+        for m in self.file[grp].attrs:
+            print(f'{m}:  {self.file[grp].attrs[m]}')
+
+    def read_metadata(object, print=False):
+        metadata = dict(object.attrs)
+        if print:
+            tools.print_dict(metadata)
+        return metadata
 
     def write_metadata(object, metadata):
         if not type(metadata) is dict:
@@ -117,20 +179,63 @@ class HDF5():
         for key in metadata.keys():
             object.attrs[key] = metadata[key]
 
-    def read_metadata(object, print=True):
-        metadata = dict(object.attrs)
-        if print:
-            tools.print_dict(metadata)
-        return metadata
-
+    # Internal functions
     def _get_parent(self, parent):
         if parent is None:
             return self.file
         else:
             return self.file[parent]
 
+    # Dunders
     def __name__(self):
-        return self.name
+        return self.filename
 
     def __del__(self):
-        self.file.close()
+        try:
+            self.file.close()
+            if self.verbose:
+                    tools.logprint(f'Closed file {self.__name__()}.', 'blue')
+        except ImportError:
+            None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        try:
+            self.file.close()
+            if self.verbose:
+                    tools.logprint(f'Closed file {self.__name__()} '
+                        'because of __exit__ call.', 'blue')
+        except ImportError:
+            None
+
+    # Functions that can be used without instance
+
+    def merge_files(source, target):
+        '''This function assumes no groups of level greater than 1
+        '''
+        source = h5py.File(source, 'r')
+        target = HDF5(target, 'open')
+        for grp in source:
+            group = source[grp]
+            m = HDF5.read_metadata(group)
+            target.group(grp, metadata=m)
+            tools.logprint(f'Transferring {len(group)} datasets.')
+            for dset in tqdm(group):
+                dataset = group[dset]
+                m = HDF5.read_metadata(dataset)
+                target.create_dataset(dset, dataset[:], grp, m, True, False)
+        source.close()
+        del target
+
+    def allkeys(obj):
+        "Recursively find all keys in an h5py.Group."
+        keys = (obj.name,)
+        if isinstance(obj, h5py.Group):
+            for key, value in obj.items():
+                if isinstance(value, h5py.Group):
+                    keys = keys + HDF5.allkeys(value)
+                else:
+                    keys = keys + (value.name,)
+        return keys
