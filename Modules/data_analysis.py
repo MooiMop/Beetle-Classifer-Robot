@@ -1,10 +1,38 @@
+'''Data analysis for HDF5 files produced by BCR module.
+
+Analysis and plotting is handled by the two classes. To improve processing
+speed, separate numba-accelerated functions are implemented.
+
+Classes
+-------
+    DataAnalyzer
+    DataPlotter
+
+Functions (numba accelerated)
+-----------------------------
+    calc_DOP
+    calc_stokes_frames
+    calc_stokes_params
+    exposure_correction
+    stokes_frames_normalize
+
+Function (misc)
+---------------
+    frame_overview
+
+Constants
+---------
+    MAX_PIXEL_VALUE
+    MIN_PIXEL_VALUE
+'''
 import numpy as np
 import matplotlib.pyplot as plt
 import h5py
 import os
-from tqdm import tqdm
-from numba import jit, njit
+from tqdm import tqdm, trange
+from numba import njit
 import time
+from scipy.fft import fft, fftfreq
 
 try:
     import Modules.tools as tools
@@ -13,18 +41,44 @@ except ModuleNotFoundError:
     import tools
     from HDF5manager import HDF5
 
+# Constants
+MAX_PIXEL_VALUE = 255
+MIN_PIXEL_VALUE = 0
+
+# Numba accelerated functions
 @njit
-def get_top_10percent(array, errors):
-    args = np.argsort(array.flatten())
-    N = int(len(array) * 0.1)
-    output1 = array.flatten()[args]
-    output2 = errors.flatten()[args]
-    return output1[-N:], output2[-N:]
+def calc_DOP(stokes_frame):
+    '''Calculate degree of polarization of each pixel in frame.'''
+    numerator = np.sqrt(np.sum(stokes_frame[:, :, 1:]**2, axis=-1))
+    denominator = stokes_frame[:, :, 0]
+    output = numerator / denominator
+    return output
+
 
 @njit
-def calc_stokes_frames(input_data, input_data_err, angles):
-    # assume dataset of shape [reflection angles, polarizer_angles, x, y]
-    input_shape = input_data.shape
+def calc_stokes_frames(frame, frame_err, angles):
+    '''Calculate stokes vector for each pixel in frame.
+
+    Parameters
+    ----------
+    frame : float
+        Numpy array of shape [reflection angles, polarizer_angles, x, y] with
+        (corrected) pixel count values.
+    frame_err : float
+        Numpy array of same shape as frame with (corrected) pixel count errors.
+    angles : int
+        List or numpy array with values of wave-plate rotation angle.
+
+    Returns
+    -------
+    stokes_frames : float
+        Numpy array of shape [reflection_angles, x, y, 4] of pixel-specific
+        Stokes vectors.
+    error : float
+        Numpy array of same shape as stokes_frames with error values for each
+        Stokes vector.
+    '''
+    input_shape = frame.shape
     R = input_shape[0]
     X = input_shape[2]
     Y = input_shape[3]
@@ -35,88 +89,189 @@ def calc_stokes_frames(input_data, input_data_err, angles):
     for r in range(R):
         for x in range(X):
             for y in range(Y):
-                intensity = input_data[r, :, x, y]
-                err = input_data_err[r, :, x, y]
-                stokes_frames[r, x, y], error[r,x,y] = calc_stokes_params(intensity, err, angles)
+                if frame[r, :, x, y].sum() == 0:
+                    stokes_frames[r, x, y] = [0, 0, 0, 0]
+                    error[r, x, y] = [0, 0, 0, 0]
+                else:
+                    intensity, err = frame[r, :, x, y], frame_err[r, :, x, y]
+                    vec, err = calc_stokes_params(intensity, err, angles)
+                    stokes_frames[r, x, y], error[r, x, y] = vec, err
     return stokes_frames, error
+
 
 @njit
 def calc_stokes_params(intensity, intensity_err, angles):
-    N = len(angles)
-    A = 1 / N * np.sum(intensity)
-    B = 1 / N * np.sum(intensity * np.sin(2 * angles))
-    C = 1 / N * np.sum(intensity * np.cos(4 * angles))
-    D = 1 / N * np.sum(intensity * np.sin(4 * angles))
-    S0 = 2 * (A - C)
-    S1 = 4 * C
-    S2 = 4 * D
-    S3 = -2 * B
+    '''Calculate single stokes vector from series of wave-plate angle dependent
+    intensities.
+
+    This function checks if the calculated values make sense by checking if the
+    squared sum of parameters S1-S3 is larger than S0. If this is the case, it
+    outputs a Stokes vector consisting of zeros.
+
+    Parameters
+    ----------
+    intensity : list float
+        (Numpy) list with intensity values.
+    intensity_err : list float
+        (Numpy) list with intensity errors.
+    angles : list float
+        (Numpy) list with values of wave-plate rotation angle (radians or
+        degrees).
+
+    Returns
+    ------
+    stokes_vector : list float
+        List with Stokes 4-vector.
+    error  : list float
+        List with Stokes 4-vector errors.
+    '''
+    # Convert degrees to radians if necessary
+    convert = angles.max() > 10.0
+    if convert:
+        x = angles[1:] / 180 * np.pi
+    else:
+        x = angles[1:]
+    y = intensity[1:]
+    y[-1] = (intensity[0] + intensity[-1]) / 2
+    yerr = intensity_err[1:]
+    yerr[-1] = (intensity_err[0] + intensity_err[-1]) / 2
+
+    N = len(angles) - 1
+    A = 2 * np.mean(y)
+    B = (y * np.sin(2 * x)).sum() / N * 4
+    C = (y * np.cos(4 * x)).sum() / N * 4
+    D = (y * np.sin(4 * x)).sum() / N * 4
+    S0 = (A - C)
+    S1 = 2 * C
+    S2 = 2 * D
+    S3 = -1 * B
+
+    # Squared sum inequality check.
     sum1 = S1**2 + S2**2 + S3**2
     sum2 = S0**2
-
-    if  sum1 > sum2:
+    if sum1 > sum2:
         stokes_vector = [0.0, 0.0, 0.0, 0.0]
-        stokes_err = [0.0, 0.0, 0.0, 0.0]
+        error = [0.0, 0.0, 0.0, 0.0]
     else:
         stokes_vector = [S0, S1, S2, S3]
+
         # error calculation
-        A_err = np.mean(intensity_err)
-        B_err = 1 / N * np.sqrt(np.sum((intensity_err * np.sin(2 * angles))**2))
-        C_err = 1 / N * np.sqrt(np.sum((intensity_err * np.cos(4 * angles))**2))
-        D_err = 1 / N * np.sqrt(np.sum((intensity_err * np.sin(4 * angles))**2))
+        A_err = np.sqrt(np.sum(yerr**2)) / N * 2
+        B_err = np.sqrt(np.sum((yerr * np.sin(2 * x))**2)) / N * 4
+        C_err = np.sqrt(np.sum((yerr * np.cos(4 * x))**2)) / N * 4
+        D_err = np.sqrt(np.sum((yerr * np.sin(4 * x))**2)) / N * 4
         S0_err = np.sqrt(A_err**2 + C_err**2)
         S1_err = 2 * C_err
         S2_err = 2 * D_err
         S3_err = B_err
-        stokes_err = [S0_err, S1_err, S2_err, S3_err]
-    return stokes_vector, stokes_err
+        error = [S0_err, S1_err, S2_err, S3_err]
+    return stokes_vector, error
+
 
 @njit
 def stokes_frames_normalize(stokes_frames, errors):
-    # assume input of shape [reflection angles, x, y, 4]
-    R = stokes_frames.shape[0]
-    X = stokes_frames.shape[1]
-    Y = stokes_frames.shape[2]
-    output = np.zeros(shape=stokes_frames.shape)
-    output_err = np.zeros(shape=stokes_frames.shape)
+    '''Normalize stokes vectors in data cube such that S0 is always 1.
+
+    Parameters
+    ----------
+    stokes_frames : float
+        Numpy array with Stokes vectors of shape
+        [reflection angles, x, y, 4].
+    errors : float
+        Numpy array with Stokes vector errors of shape
+        [reflection angles, x, y, 4]
+
+    Returns
+    -------
+    output : float
+        Numpy array with normalized Stokes vectors of shape
+        [reflection angles, x, y, 4]
+    error : float
+        Numpy array with normalized errors of shape
+        [reflection angles, x, y, 4]
+    '''
+    shape = stokes_frames.shape
+    R, X, Y = shape[:3]
+    output = np.zeros(shape)
+    error = np.zeros(shape)
     for r in range(R):
         for x in range(X):
             for y in range(Y):
                 norm = stokes_frames[r, x, y, 0]
-                for i in range(4):
+                for s in range(4):
                     if norm == 0:
-                        output[r, x, y, i] *= 0
-                        output_err[r, x, y, i] *= 0
+                        # Set entire vector to zero. This is to prevent divided
+                        # by zero problems.
+                        output[r, x, y, s] *= 0
+                        error[r, x, y, s] *= 0
                     else:
-                        output[r, x, y, i] = stokes_frames[r, x, y, i] / norm
-                        output_err[r, x, y, i] = errors[r, x, y, i] / norm
-    return output, output_err
+                        output[r, x, y, s] = stokes_frames[r, x, y, s] / norm
+                        error[r, x, y, s] = errors[r, x, y, s] / norm
+    return output, error
 
-@njit
-def calc_DOP(stokes_frame):
-    numerator = np.sqrt(np.sum(stokes_frame[:,:,1:]**2, axis=-1))
-    denominator = stokes_frame[:, :, 0]
-    output = numerator / denominator
-    return output
-
-# Useful functions when inspecting a HDF5 file or a complex frame array.
-# Can be used without initializing DataAnalyzer
+# Misc functions
 def frame_overview(arr):
+    '''Outputs useful quantities of numpy array of single data frame.'''
     print(f'Shape:  {arr.shape}')
     print(f'Min:  {np.min(arr, axis=(0,1))}')
     print(f'Max:  {np.max(arr, axis=(0,1))}')
     print(f'Mean:  {np.mean(arr, axis=(0,1))}')
     print(f'Median:  {np.median(arr, axis=(0,1))}')
 
-class DataAnalyzer():
 
-    def __init__(self, datafilepath=None, force_calculation=False,
-        verbose=True):
+class DataAnalyzer():
+    '''
+    A class that represents a HDF5 data file.
+
+    Upon initialization, the class will open a HDF5 file. If it detects that
+    its a raw datafile, it will create a new HDF5 in a new subfolder with
+    corrected frames. Likewise, if no HDF5 datasets are detected with Stokes
+    vectors, it will calculate and generate these.
+
+    Attributes
+    ----------
+    f : HDF5 object
+        instance of custom HDF5 class that contains h5py instance of HDF5 file
+    filename : str
+        filename of the HDF5 file
+    verbose : bool
+        whether or not to print comments during execution
+
+    Methods
+    -------
+    correction_sequence():
+        Creates new HDF5 file with corrected data.
+    generate_stokes_frames(mode):
+        Creates a HDF5 dataset filled with frames of Stokes vectors.
+    single_frames_generator():
+        Generates a plot of each Stokes vector as a seperately colored frame.
+    stokes_vs_angle_generator():
+        Generates a plot of Stokes parameter vs reflection angle.
+    '''
+
+    def __init__(self, path=None, force_calculation=False, verbose=True):
+        '''Initialize DataAnalyzer object.
+
+        Opens a HDF5 file in write mode using custom HDF5 class from
+        Modules.HDF5manager. If the file does not contain a dataset called
+        'Frames_err', a new file is created and data correction is started.
+        If the file does not contain a dataset called 'Stokes_vectors',
+        calculation of the Stokes vectors is started.
+
+        Parameters
+        ----------
+        path : str
+            (full) path to HDF5 file
+        force_calculation : bool
+            if true, perform calculation regardless of existance of datasets
+        verbose : bool
+            whether or not to print comments during execution
+        '''
         # Get filename and set working directory
-        if datafilepath == None:
-            datafilepath = input('(Full) path to HDF5 file to consider: ')
-        self.filename = os.path.basename(datafilepath)
-        os.chdir(os.path.dirname(datafilepath))
+        if path is None:
+            path = input('(Full) path to HDF5 file to consider: ')
+        self.filename = os.path.basename(path)
+        os.chdir(os.path.dirname(path))
         self.verbose = verbose
 
         # Open datafile using custom HDF5 module
@@ -125,17 +280,38 @@ class DataAnalyzer():
             self.f.print_structure()
 
         # Start correction sequence if file is raw file.
-        if (not self.f.contains_key('Frames_err')) or force_calculation:
-            if self.verbose:
-                    tools.logprint('Correcting raw data and creating new file.')
-            self.correction_sequence()
+        raw = not self.f.contains_key('Frames_err')
+        # Check if the corrected file already exists.
+        corrected_path = os.path.join(
+            os.getcwd(),
+            self.filename[:-5] + ' corrected',
+            self.filename[:-5] + ' corrected.hdf5')
+        corrected_exists = os.path.exists(corrected_path)
+        if raw:
+            if not corrected_exists or force_calculation:
+                self.correction_sequence()
+            elif corrected_exists:
+                if self.verbose:
+                    tools.logprint('Corrected file already exists. '
+                                   'Switching to it.')
+                self.filename = os.path.basename(corrected_path)
+                os.chdir(os.path.dirname(corrected_path))
+                self.f = HDF5(self.filename, 'open', verbose=verbose)
 
         if (not self.f.contains_key('Stokes_vectors')) or force_calculation:
-            for mode in ['single frame', 'rgb' , None]:
+            for mode in ['single frame', None]:
                 self.generate_stokes_frames(mode)
 
-    # Functions for data reduction sequences
     def correction_sequence(self):
+        '''Convert raw data into corrected frames with error values.
+
+        Uses 'with/as' form to create a new HDF5 file and write corrected
+        data to it. After all the calculation, the raw data file is closed and
+        replaced with the new one, such that self.f points to the new file.
+        '''
+        if self.verbose:
+            tools.logprint('Correcting raw data and creating new file.')
+
         # Create subdirectory for outputting files
         dir = self.filename[:-5] + ' corrected'
         try:
@@ -144,7 +320,8 @@ class DataAnalyzer():
             os.mkdir(dir)
             os.chdir(dir)
 
-        with HDF5(dir, 'create', date=False, verbose=self.verbose) as corrected:
+        # Open new HDF5 file in create mode
+        with HDF5(dir, 'create', verbose=self.verbose) as corrected:
             # Transfer high-level metadata
             metadata = HDF5.read_metadata(self.f.file)
             HDF5.write_metadata(corrected.file, metadata)
@@ -155,13 +332,10 @@ class DataAnalyzer():
                 try:
                     dset = group['Frames combined']
                 except KeyError:
-                    if self.verbose:
-                            tools.logprint(
-                                'Combining individual runs to single dataset.')
                     self.f.combine_datasets(parent=groupname)
                     dset = group['Frames combined']
 
-                # Combine group and dataset metdata and write to new group
+                # Combine group and dataset metadata and write to new group
                 metadata = HDF5.read_metadata(group) | HDF5.read_metadata(dset)
                 corrected.group(groupname, metadata=metadata)
 
@@ -170,23 +344,24 @@ class DataAnalyzer():
                 output_shape = dset.shape[1:]
                 corrected_frames = np.zeros(output_shape)
                 error = np.zeros(output_shape)
-                for i in tqdm(range(reflection_angles)):
-                    data = dset[:, i]
 
-                    # Dark frame correction
+                pbar = trange(reflection_angles)
+                for i in pbar:
+                    pbar.set_description("Loading data")
+                    data = dset[:, i]  # zero-th dimension is the number of
+                                       # repeats of the experiment
+
                     try:
                         dark_frame = group['dark frame 0'][:]
-                        dark_frame = np.median(dark_frame, axis=0)
+                        pbar.set_description('Subtracting dark frames.')
+                        dark_frame = np.median(dark_frame, axis=0).astype(int)
                         data = data - dark_frame
                     except KeyError:
                         None
 
-                    # Exposure correction
-                    exposure = dset.attrs['exposure']
-                    data = data / exposure
-
-                    # Calculate final value and error
+                    pbar.set_description('Calculating errors')
                     error[i] = np.std(data, axis=0) / np.sqrt(len(data))
+                    pbar.set_description('Calculating mean pixel values')
                     corrected_frames[i] = np.mean(data, axis=0)
 
                 # Create new datasets
@@ -206,9 +381,30 @@ class DataAnalyzer():
                     overwrite=True)
 
         self.filename = dir
-        self.f = HDF5(self.filename, 'open', verbose=False)
+        del self.f
+        self.f = HDF5(self.filename, 'open', verbose=self.verbose)
 
     def generate_stokes_frames(self, mode=None):
+        '''Generate stokes frames using one of three different mode and save
+        to new dataset in self.f.
+
+        Parameters
+        ----------
+        mode : str
+            selects mode to calculate stokes frames, can be set to:
+                'rgb':
+                    Calculate a stokes for every pixel in every frame,
+                    seperated by rgb color channel.
+                'single frame':
+                    Calculate a single stokes vector for an entire frame by
+                    summing all pixel count values for each frame. This
+                    mode does calculate a stokes vector for each color
+                    channel separately.
+                None:
+                    Calculate a stokes for every pixel in every frame.
+            For modes 'rgb' and None, a seperate dataset with normalized
+            stokes vectors is created.
+        '''
         if self.verbose:
             tools.logprint(
                 f'Generating Stokes Frames (mode={mode}).')
@@ -223,65 +419,39 @@ class DataAnalyzer():
                 norm = []
                 norm_err = []
                 for channel in range(3):
-                    selection = frames[:,:,:,:,channel]
-                    selection2 = frames_err[:,:,:,:,channel]
+                    selection = frames[:, :, :, :, channel]
+                    selection2 = frames_err[:, :, :, :, channel]
                     d, e = calc_stokes_frames(selection, selection2, angles)
                     n, n_e = stokes_frames_normalize(d, e)
                     data.append(d)
                     norm.append(n)
                     data_err.append(e)
                     norm_err.append(n_e)
-                stokes_frames = np.transpose(data, (1,2,3,0,4))
-                error = np.transpose(data_err, (1,2,3,0,4))
-                norm = np.transpose(norm, (1,2,3,0,4))
-                norm_err = np.transpose(norm_err, (1,2,3,0,4))
+                stokes_frames = np.transpose(data, (1, 2, 3, 0, 4))
+                error = np.transpose(data_err, (1, 2, 3, 0, 4))
+                norm = np.transpose(norm, (1, 2, 3, 0, 4))
+                norm_err = np.transpose(norm_err, (1, 2, 3, 0, 4))
                 name = 'Stokes_frames_rgb'
             elif mode == 'single frame':
                 stokes_frames = []
                 error = []
                 for channel in range(3):
-                    data = []
-                    data_err = []
-                    f = frames[:,:,:,:,channel]
-                    fe = frames_err[:,:,:,:,channel]
-
                     for i in range(len(frames)):
-                        selection = f[i]
-                        selection2 = fe[i]
-
-                        # Correct for overexposure by setting those pixels to 0
-                        mask = selection != 255
-                        selection = selection * mask
-                        selection2 = selection * mask
-
-                        ## Get top 10 percent of pixel values
-                        #input = []
-                        #input_err = []
-                        #for i in range(len(selection)):
-                        #    top, err = get_top_10percent(selection[i], selection2[i])
-                        #    input.append(np.sum(top))
-                        #    input_err.append(np.sum(input_err))
-
-                        #input = np.array(input)
-                        #input_err = np.array(input_err)
-
-                        input = selection.sum(axis=(1,2))
-                        input_err = selection2.sum(axis=(1,2))
-
-                        s, e = calc_stokes_params(input, input_err, angles)
-                        data.append(s)
-                        data_err.append(e)
-                    stokes_frames.append(data)
-                    error.append(data_err)
-                stokes_frames = np.transpose(stokes_frames, (1, 0, 2))
-                error = np.transpose(error, (1, 0, 2))
-                name ='Stokes_vectors'
+                        input = frames[i, :, :, :, channel].sum(axis=(1, 2))
+                        err = frames_err[i, :, :, :, channel].sum(axis=(1, 2))
+                        vec, vec_err = calc_stokes_params(input, err, angles)
+                        stokes_frames.append(vec)
+                        error.append(vec_err)
+                stokes_frames = np.reshape(stokes_frames, (len(frames), 3, 4))
+                error = np.reshape(error, (len(frames), 3, 4))
+                name = 'Stokes_vectors'
             else:
-                frames = frames.sum(axis=-1)
-                frames_err = frames_err.sum(axis=-1)
-                t = time.time()
-                stokes_frames, error = calc_stokes_frames(frames, frames_err, angles)
-                norm, norm_err = stokes_frames_normalize(stokes_frames, error)
+                shape = frames.shape
+                frames, frames_err = frames.sum(axis=4), frames_err.sum(axis=4)
+                stokes_frames, error = calc_stokes_frames(
+                    frames, frames_err, angles)
+                norm, norm_err = stokes_frames_normalize(
+                    stokes_frames, error)
                 name = 'Stokes_frames'
 
             self.f.create_dataset(
@@ -292,12 +462,13 @@ class DataAnalyzer():
                 self.f.create_dataset(
                     name+'_normalized', norm, group_name, overwrite=True)
                 self.f.create_dataset(
-                    name+'_normalized_error', norm_err, group_name, overwrite=True)
+                    name+'_normalized_error', norm_err, group_name,
+                    overwrite=True)
 
-    def _mask_overexposure(self, frame):
-        mask = frame != 255
-    # Plotting functions
-    def single_frames_generator(self, name=None):
+    def single_frames_generator(self):
+        '''Generate a plot of each Stokes vector as a seperately colored frame
+        for each reflection angle in every data group.
+        '''
         for group_name in self.f.file:
             group = self.f.group(group_name)
             angles_out = group['angles_out'][:]
@@ -306,14 +477,19 @@ class DataAnalyzer():
                 selection = np.argmax(angles_out == angle)
                 frame = group['Frames'][selection]
                 stokes_frame = group['Stokes_frames'][selection]
-                stokes_frame_norm = group['Stokes_frames_normalized'][selection]
+                stokes_frame_norm = group['Stokes_frames_normalized']
+                stokes_frame_norm = stokes_frame_norm[selection]
                 err = group['Frames_err'][selection]
                 stokes_err = group['Stokes_frames_error'][selection]
-                name = f'Frame overview - {group_name[:2]}->{angle}.png'
-                DataPlotter.single_frame(frame, stokes_frame, stokes_frame_norm,
-                    angles, err, stokes_err, name)
+                name = f'Frame overview - {group_name[:2]}--{angle}'
+                DataPlotter.single_frame(
+                    frame, stokes_frame, stokes_frame_norm, angles, err,
+                    stokes_err, name)
 
-    def stokes_vs_angle_generator(self, name=None):
+    def stokes_vs_angle_generator(self):
+        '''Generate a plot of Stokes parameter vs reflection angle for each
+        data group.
+        '''
         for group_name in self.f.file:
             group = self.f.group(group_name)
             stokes_vectors = group['Stokes_vectors'][:]
@@ -322,35 +498,160 @@ class DataAnalyzer():
             DataPlotter.stokes_vs_angle(
                 stokes_vectors, angles, stokes_err, group_name)
 
+
 class DataPlotter():
-    def argmax2d(frame):
+    '''
+    A class that bundles plotting functions.
+
+    This class has no 'programmatic' benefit other than to organize standard,
+    often used plots together.
+
+    Methods
+    -------
+    argmax_nd(frame):
+        get the coordinate of an N-d array without flattening dimensions
+    highlight_cell(x, y, width, ax, **kwargs):
+        add square box to existing ax
+    single_frame(frame, stokes_frame, stokes_frame_norm, angles, err=None,
+                 stokes_err=None, name=None):
+        plot 6 axes: rgb image, degree of polarization, S1-S3, and the Stokes
+        vector fit on a single pixel
+    stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None):
+        plot each Stokes vector as a function of angle of reflection separated
+        by color channel
+    '''
+
+    COLORS = ['orangered', 'deepskyblue', 'yellowgreen', 'darkviolet']
+    LINESTYLES = ['solid', 'dotted', 'dashed', 'dashdot']
+
+    def argmax_nd(frame):
+        '''get the coordinate of an N-d array without flattening dimensions'''
         index = np.unravel_index(frame.argmax(), frame.shape)
         return index
 
-    def highlight_cell(x,y, width=10, ax=None, **kwargs):
-        rect = plt.Rectangle((x-int(width/2), y-int(width/2)), width, width, fill=False, **kwargs)
+    def error_margin(x, upper, lower, ax=None, alpha=0.5,
+            color='red', **kwargs):
+        if ax is None:
+            ax = plt.gca()
+        shaded = ax.fill_between(x, upper, lower,
+                                  alpha=alpha, color=color, **kwargs)
+        return shaded
+
+    def highlight_cell(x, y, width=50, ax=None, **kwargs):
+        '''Add square box to existing ax.
+
+        Parameters
+        ----------
+        x : int
+            x-coordinate of box center
+        j : int
+            y-coordinate of box center
+        width : int
+            full width of box
+        ax : matplotlib.axes object (default None)
+            ax to add box to. If set to None, a new object is created or it
+            is added to the open matplotlib session.
+        **kwargs
+            arguments to pass through to plt.Rectangle()
+
+        Returns
+        -------
+        rect: plt.Rectangle() instance
+        '''
+        rect = plt.Rectangle(
+            (x-int(width/2), y-int(width/2)), width, width,
+            fill=False, **kwargs)
         ax = ax or plt.gca()
         ax.add_patch(rect)
         return rect
 
-    def intensity_curve(stokes_vector):
-        # Generate expected intensity curve with given Stokes vector
-        theta = np.linspace(0, np.pi, 100)
+    def intensity_curve(stokes_vector, N=100):
+        '''Generate intensity curve from Stokes vector.
+
+        Parameters
+        ----------
+        stokes_vector : list int
+            Stokes 4-vector
+        N : int (default 100)
+            y-coordinate of box center
+
+        Returns
+        -------
+        intensity: list float
+            intensity values
+        theta: list float
+            wave-plate rotation angles with dtheta = 180/N degrees
+        '''
+        theta = np.linspace(0, np.pi, N)
         I0 = stokes_vector[0]
         I1 = stokes_vector[1] * np.cos(2 * theta)**2
         I2 = stokes_vector[2] * np.cos(2 * theta) * np.sin(2 * theta)
         I3 = stokes_vector[3] * np.sin(2 * theta) * -1
-        I = 0.5 * (I0 + I1 + I1 + I3)
+        intensity = 0.5 * (I0 + I1 + I2 + I3)
         theta = theta / np.pi * 180
-        return I, theta
+        return intensity, theta
+
+    def stokes_image(stokes_frame_norm, S, v=None, ax=None, fig=None, **kwargs):
+        v = v or np.abs(stokes_frame_norm[:, :, S]).max()
+        if ax is None:
+            ax = plt.gca()
+        if fig is None:
+            fig = ax.get_figure()
+
+        im = ax.imshow(
+            stokes_frame_norm[:, :, S], vmin=-v, vmax=v,
+            cmap='bwr', **kwargs)
+        ax.set_title('S' + str(S))
+        ax.axes.xaxis.set_visible(False)
+        ax.axes.yaxis.set_visible(False)
+        fig.colorbar(im, ax=ax)
+        return im
+
+    def fourier(y, angles, offset=0.0, ax=None, **kwargs):
+        if ax is None:
+            ax = plt.gca()
+        N = len(y)
+        dt = angles[1] - angles[0]
+        transform = fft(y)
+        norm = transform.max()
+        transform = np.abs(transform / norm)
+        freq = fftfreq(N, dt) * 360 - offset
+        markerline, stemlines, baseline = ax.stem(
+            freq[1:], transform[1:], markerfmt='D', **kwargs)
+
+        # Aesthetics
+        baseline.set_alpha(0.2)
+        baseline.set_color('black')
+        ax.set_title('Fourier Transform')
+        ax.set_xlim(0.2, 6.2)
+        ax.set_xlabel(r'Fourier Frequency ($2\pi f$)')
+        ax.set_ylabel('Fourier Amplitude')
+        return transform, markerline, stemlines, baseline
 
     def single_frame(frame, stokes_frame, stokes_frame_norm, angles,
-        err=None, stokes_err=None, name=None):
+                     err=None, stokes_err=None, name=None):
+        '''Plot 6 axes: rgb image, degree of polarization, S1-S3, and the
+        Stokes vector fit on a single pixel.
+
+        Parameters
+        ----------
+        frame : numpy array
+            Input rgb frames of shape [polarizer_angles, x, y, 3].
+        stokes_frame : numpy array
+            Input stokes frames of shape [polarizer_angles, x, y, 3].
+
+        Returns
+        -------
+        intensity: list float
+            intensity values
+        theta: list float
+            wave-plate rotation angles with dtheta = 180/N degrees
+        '''
         # Assumes input frames are of shape [P, x, y, 3] where P is the number
         # of polarizer angles
 
         # Select brightest part
-        arg = DataPlotter.argmax2d(frame)[0:3]
+        arg = DataPlotter.argmax_nd(frame)[0:3]
         pixel = frame[:, arg[1], arg[2]].sum(axis=-1)
         stokes_vector = stokes_frame[arg[1], arg[2]]
         if err is not None:
@@ -359,93 +660,116 @@ class DataPlotter():
             stokes_vector_err = stokes_err[arg[1], arg[2]]
 
         # start plotting
-        fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(15,10))
+        fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(13,15))
 
         # RGB image
-        RGB_img = frame[arg[0]]
-        RGB_img = RGB_img / RGB_img.max()
-        #axes[0,0].imshow(np.clip(RGB_img, 0, 50)/50)
-        axes[0,0].imshow(RGB_img)
-        axes[0,0].set_title('RGB image')
-
-        # Image of degree op polarization
-        P = calc_DOP(stokes_frame)
-        im = axes[0,1].imshow(P, vmin=0, vmax=1, cmap='hot')
-        fig.colorbar(im, ax=axes[0,1])
-        axes[0,1].set_title('Degree of polarization')
+        RGB_img = frame[arg[0]].astype('uint8')
+        clip = int(np.min([np.mean(RGB_img) * 2, RGB_img.max()]))
+        clipped = np.clip(RGB_img, 0, clip)
+        axes[0, 0].imshow(clipped)
+        axes[0, 0].imshow(RGB_img)
+        axes[0, 0].set_title('RGB image')
+        axes[0, 0].axes.xaxis.set_visible(False)
+        axes[0, 0].axes.yaxis.set_visible(False)
 
         # Images of Stokes paramaters
-        mini = np.min(stokes_frame_norm[:, :, 1:])
-        maxi = np.min(stokes_frame_norm[:, :, 1:])
-        v = np.abs(np.max([mini,maxi]))
-        im1 = axes[1,0].imshow(stokes_frame_norm[:, :, 1], vmin=-v, vmax=v, cmap='bwr')
-        im2 = axes[1,1].imshow(stokes_frame_norm[:, :, 2], vmin=-v, vmax=v, cmap='bwr')
-        im3 = axes[2,0].imshow(stokes_frame_norm[:, :, 3], vmin=-v, vmax=v, cmap='bwr')
-        axes[1,0].set_title(f'S1')
-        axes[1,1].set_title(f'S2')
-        axes[2,0].set_title(f'S3')
-        fig.colorbar(im1, ax=axes[1,0])
-        fig.colorbar(im2, ax=axes[1,1])
-        fig.colorbar(im2, ax=axes[2,0])
-        DataPlotter.highlight_cell(arg[2], arg[1], 30, ax=axes[2,0], color='green', linewidth=2)
+        mini = stokes_frame_norm[:, :, 1:].min()
+        maxi = stokes_frame_norm[:, :, 1:].max()
+        v = np.max(np.abs([mini, maxi]))
+        for S, coord in enumerate([(0, 1), (1, 0), (1, 1)]):
+            DataPlotter.stokes_image(
+                stokes_frame_norm, S + 1, ax=axes[coord], fig=fig, v=v)
+            DataPlotter.highlight_cell(arg[1], arg[2], ax=axes[coord],
+                color='green', lw=5)
 
         # Image of Fourier analysis Stokes paramater calculation
+        ax = axes[2, 0]
+        # Data plot
         if err is not None:
-            axes[2,1].errorbar(angles, pixel, yerr=pixel_err, label='Measurement')
+            ax.errorbar(angles, pixel, yerr=pixel_err,
+                        label='Measurement', color=DataPlotter.COLORS[0])
         else:
-            axes[2,1].plot(angles, pixel, label='Measurement')
+            ax.plot(
+                angles, pixel, label='Measurement', color=DataPlotter.COLORS[0])
+        # Stokes vector expected intensity plot
         I, theta = DataPlotter.intensity_curve(stokes_vector)
-        axes[2,1].plot(theta, I, label='Expected', c='red')
+        ax.plot(theta, I, label='Expected', color=DataPlotter.COLORS[1])
         if stokes_err is not None:
-            upper, dump= DataPlotter.intensity_curve(stokes_vector+stokes_vector_err)
-            lower, dump= DataPlotter.intensity_curve(stokes_vector-stokes_vector_err)
-            axes[2,1].fill_between(
-                theta, upper, lower, facecolor='red', alpha=0.3,
-                label=r'Error interval')
-        axes[2,1].legend()
-        axes[2,1].set_title('Fit of Stokes parameters')
+            upper, *x = DataPlotter.intensity_curve(
+                stokes_vector + stokes_vector_err)
+            lower, *x = DataPlotter.intensity_curve(
+                stokes_vector-stokes_vector_err)
+            DataPlotter.error_margin(
+                theta, upper, lower, ax, color=DataPlotter.COLORS[1])
+        ax.legend()
+        ax.set_xlabel('Wave-plate Rotation Angle (degrees)')
+        ax.set_ylabel('Intensity (Pixel Count)')
+        ax.set_title('Fit of Stokes parameters for Single Pixel')
+
+        # Fourier transform
+        ax = axes[2, 1]
+        params = DataPlotter.fourier(
+            pixel, angles, ax=ax, label='Measured')
+        for param in params[1:3]:
+            param.set_color(DataPlotter.COLORS[0])
+        params = DataPlotter.fourier(
+            I, theta, ax=ax, label='Calculated')
+        for param in params[1:3]:
+            param.set_color(DataPlotter.COLORS[1])
+        ax.legend(loc='upper right')
 
 
-        if name is None:
-            plt.show()
-        else:
-            fig.suptitle(name)
-            fig.savefig(name+'.png', dpi=300)
-            plt.close(fig)
-
-    def stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None):
-        fig, ax = plt.subplots(nrows=4, sharex=True, figsize=(5,10))
-        colors = ['red', 'green', 'blue']
-        markers = ['v', 'D', 'o']
-
-        # Plot each component of S in a different ax
-        norm = np.max(stokes_vectors[:, :, 0], axis=1)
-        for S in range(4):
-            for i, color in enumerate(colors):
-                if S > 0:
-                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm
-                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm
-                    ax[S].set_ylabel(f'S{S} (Normalized)')
-                if S < 3:
-                    ax[S].set_xticklabels([])
-                if S == 3:
-                    ax[S].set_xlabel('Angle out (degrees)')
-                ax[S].errorbar(
-                    angles, stokes_vectors[:, i, S],
-                    yerr=stokes_err[:, i, S], ls = ':',
-                    label=f'{color} channel', color=color, marker=markers[i])
-            ax[S].set_ylabel(f'S{S}')
-        ax[0].legend()
+        fig.suptitle(name)
         fig.tight_layout()
         if name is None:
             plt.show()
         else:
-            fig.suptitle(name)
+            fig.savefig(name + '.png', dpi=300, transparent=False,
+                        bbox_inches='tight')
+            plt.close(fig)
+
+
+    def stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None):
+        fig, ax = plt.subplots(nrows=4, sharex=True, figsize=(5, 10))
+        colors = ['red', 'green', 'blue']
+        markers = ['v', 'D', 'o']
+
+        # Plot each component of S in a different ax
+        norm13 = np.max(stokes_vectors[:, :, 0], axis=1)
+        norm0 = np.max(stokes_vectors)
+        for S in range(4):
+            for i, color in enumerate(colors):
+                if S > 0:
+                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm13
+                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm13
+                else:
+                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm0
+                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm0
+                ax[S].set_ylabel(f'S{S}')
+                if S < 3:
+                    ax[S].axes.xaxis.set_visible(False)
+                if S == 3:
+                    ax[S].set_xlabel('Angle out (degrees)')
+                ax[S].errorbar(
+                    angles, stokes_vectors[:, i, S],
+                    yerr=stokes_err[:, i, S], ls=':',
+                    label=f'{color} channel', color=color, marker=markers[i])
+            ax[S].set_ylabel(f'S{S}')
+            ax[S].hlines(0,angles.min()-1,angles.max()+1, colors='black')
+            ax[S].set_xlim(angles.min()-1,angles.max()+1)
+        ax[0].legend()
+        fig.suptitle(name)
+        fig.tight_layout()
+        if name is None:
+            plt.show()
+        else:
+
             fig.savefig(name+'.png', dpi=300)
             plt.close(fig)
 
 if __name__ == '__main__':
-    path = '/Users/naorscheinowitz/Master Project/Beetle Project/Beetle Classifier Robot/Experiments/Beetle Hyperspectral/Beetle reflection spot corrected/Beetle reflection spot corrected.hdf5'
-    DA = DataAnalyzer(path, verbose=False, force_calculation=False)
-    DA.generate_stokes_frames(mode='single frame')
+    path = './Experiments/Beetle Hyperspectral - maximal exposure - large angle.hdf5'
+    DA = DataAnalyzer(path, verbose=True, force_calculation=False)
+    #print(dict(DA.f.file['Frames'].attrs))
+    DA.stokes_vs_angle_generator()
     DA.single_frames_generator()

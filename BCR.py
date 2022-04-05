@@ -1,12 +1,14 @@
-'''Docstring
-to do...
-Use pycodestyle [filename] to check style.
+'''Master module for running experiments using the Beetle Classification Robot.
+
+Class method BCR can be called to initialize connected devices. See
+BCR.__doc__ for more information on the different methods and README.md for
+more information about the project.
 '''
 
 __author__ = "Naor Scheinowitz"
 __credits__ = ["Naor Scheinowitz"]
 __license__ = "GPL-3.0-or-later"
-__version__ = "0.8"
+__version__ = "0.9"
 __maintainer__ = "Naor Scheinowitz"
 __email__ = "scheinowitz@physics.leidenuniv.nl"
 
@@ -123,9 +125,10 @@ class BCR():
             f = HDF5(name, 'create', self.user, False, m_high_level)
         elif mode == 'add':
             f = HDF5(name, 'open')
-        if parent is not None:
-            # Check if group exists and create if not
-            f.group(parent, metadata=m_low_level)
+        if parent is None:
+            parent = f'{angle_in} degree reflection'
+        # Check if group exists and create if not
+        f.group(parent, metadata=m_low_level)
 
         if dark:
             self._get_dark_frame(f, parent)
@@ -162,7 +165,6 @@ class BCR():
                         dset = f.create_dataset('Frames', img, parent, m)
                     else:
                         HDF5.append_dataset(dset, img)
-            f.combine_datasets(parent)
             tools.logprint('Measurement sequence completed!', 'green')
         except KeyboardInterrupt:
             choice = input('Delete uncompleted measurement run? (y/N)')
@@ -399,7 +401,7 @@ class BCR():
             if choice in ['y', 'Y']:
                 del f.file[dset.name]
 
-    def _get_dark_frame(self, savefile=None, parent=None, n=50):
+    def _get_dark_frame(self, savefile=None, parent=None, n=5):
 
         tools.logprint('WARNING. About to measure dark frame. Please make'
                        'sure all lights are off.', 'yellow')
@@ -470,10 +472,13 @@ class BCR():
 
     def _estimate_duration(self, pol_steps, angles_out, step_size):
         motor_steps = np.diff(angles_out) // step_size
-        steps = repeats * nframes * pol_steps * motor_steps
+        steps = nframes * pol_steps * motor_steps
         time_per_step = self.cam.instrument.get_frame_timings()[1] + 1
-        duration = steps * time_per_step
-        tools.logprint(f'Estimated duration of sequence: {np.round(duration / 3600, 2)} hours.')
+        measurement = np.round(time_per_step / 3600, 2) * steps
+        duration = measurement * repeats
+        tools.logprint(
+            f'Estimated duration of measurement: {measurement} hours.\n'
+            f'Estimated duration of sequence: {duration} hours.')
 
 
 if __name__ == '__main__':
