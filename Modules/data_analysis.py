@@ -378,20 +378,19 @@ class DataAnalyzer():
                     pbar.set_description("Loading data")
                     data = dset[:, i]  # zero-th dimension is the number of
                                        # repeats of the experiment
+                    try:
+                        dark_frame = group['dark frame 0'][:]
+                        pbar.set_description('Subtracting dark frames.')
+                        dark_frame = np.median(dark_frame, axis=0).astype(int)
+                        data = data - dark_frame
+                        data = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
+                    except KeyError:
+                        None
 
-                    #try:
-                    #    dark_frame = group['dark frame 0'][:]
-                    #    pbar.set_description('Subtracting dark frames.')
-                    #    dark_frame = np.median(dark_frame, axis=0).astype(int)
-                    #    data = data - dark_frame
-                    #    clipped = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
-                    #except KeyError:
-                    #    clipped = detect_dead_pixel(data)
-                    clipped = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
                     pbar.set_description('Calculating errors')
                     error[i] = np.std(data, axis=0) / np.sqrt(len(data))
                     pbar.set_description('Calculating mean pixel values')
-                    corrected_frames[i] = np.median(clipped, axis=0)
+                    corrected_frames[i] = np.median(data, axis=0)
 
                 # Create new datasets
                 try:
