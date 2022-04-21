@@ -134,12 +134,14 @@ class Cam():
                 tools.print_dict(settings)
             return settings
 
-    def set_settings(self, settings={}, print=True):
+    def set_settings(self, settings={}, print=True, test_img=True):
         if not type(settings) is dict:
             raise TypeError('Variable "settings" should be of type dict.')
         s = self.instrument.apply_settings(settings)
         if print:
             self.get_settings(True)
+        if test_img:
+            self.take_images(nframes=1, show=False)
 
     def take_images(self, nframes=20, median=True, show=True):
         if self.testflight:
@@ -149,7 +151,7 @@ class Cam():
             max_TO = frame_period * 2 + 1.0
             self.instrument.start_acquisition()
             self.instrument.wait_for_frame(
-                nframes=nframes, timeout=(max_TO * nframes, max_TO))
+                nframes = nframes, timeout=(max_TO * nframes, max_TO))
             img = self.instrument.read_multiple_images()
             self.instrument.stop_acquisition()
 
@@ -172,16 +174,17 @@ class Cam():
                          + f'max: {int(np.max(channel))}.\n'
                          + f'mean: {np.round(np.mean(channel),2)}. '
                          + f'median: {np.round(np.median(channel),2)}.')
-                im = ax[i].imshow(channel, cmap=maps[i], origin='lower')
+                im = ax[i].imshow(channel, cmap=maps[i])
                 ax[i].set_title(title)
                 # Colorbar stuff
                 divider = make_axes_locatable(ax[i])
                 cax = divider.append_axes('right', size='5%', pad=0.05)
                 fig.colorbar(im, cax=cax, orientation='vertical')
-
             fig.tight_layout()
             plt.show()
-
+            plt.imshow(frame)
+            plt.title('RGB image')
+            plt.show()
         return img
 
     def _random_image(self, nframes=1):

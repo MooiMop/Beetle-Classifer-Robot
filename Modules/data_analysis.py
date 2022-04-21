@@ -27,12 +27,15 @@ Constants
 '''
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import h5py
 import os
 from tqdm import tqdm, trange
 from numba import njit
 import time
 from scipy.fft import fft, fftfreq
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 try:
     import Modules.tools as tools
@@ -44,6 +47,7 @@ except ModuleNotFoundError:
 # Constants
 MAX_PIXEL_VALUE = 255
 MIN_PIXEL_VALUE = 0
+CUTOFF = 3
 
 # Numba accelerated functions
 @njit
@@ -89,7 +93,7 @@ def calc_stokes_frames(frame, frame_err, angles):
     for r in range(R):
         for x in range(X):
             for y in range(Y):
-                if frame[r, :, x, y].sum() == 0:
+                if frame[r, :, x, y].mean() <= CUTOFF:
                     stokes_frames[r, x, y] = [0, 0, 0, 0]
                     error[r, x, y] = [0, 0, 0, 0]
                 else:
@@ -167,6 +171,27 @@ def calc_stokes_params(intensity, intensity_err, angles):
         error = [S0_err, S1_err, S2_err, S3_err]
     return stokes_vector, error
 
+@njit
+def detect_dead_pixel(frames):
+    # Expect shape [repeats, theta, x, y, 3]
+    shape = frames.shape
+    X, Y = shape[2:4]
+    output = frames + 0.0
+    counter = 0
+    for x in range(X):
+        for y in range(Y):
+            for RGB in range(3):
+                mx = int(np.max(frames[:, :, x, y, RGB]))
+                mn = int(np.min(frames[:, :, x, y, RGB]))
+                #mdn = int(np.mean(frames[:, :, x, y, RGB]))
+                #std = np.std(frames[:, :, x, y, RGB])
+                if (mx-mn<5) and mn > 10:
+                    print('dead pixel found at x='+str(x)+', y='+str(y)+' and color '+str(RGB)+' with value '+str(mx))
+                    print(mx-mn, mn)
+                    counter += 1
+                    output[:, :, x, y, RGB] = np.zeros(shape[0:2])
+    print(str(counter) + ' pixels removed out of ' + str(X*Y))
+    return output
 
 @njit
 def stokes_frames_normalize(stokes_frames, errors):
@@ -329,6 +354,9 @@ class DataAnalyzer():
             # Recreate group structure with for loop
             for groupname in self.f.file:
                 group = self.f.file[groupname]
+                #try:
+                #    dset = group['Frames combined zoomed 0']
+                #except KeyError:
                 try:
                     dset = group['Frames combined']
                 except KeyError:
@@ -351,18 +379,19 @@ class DataAnalyzer():
                     data = dset[:, i]  # zero-th dimension is the number of
                                        # repeats of the experiment
 
-                    try:
-                        dark_frame = group['dark frame 0'][:]
-                        pbar.set_description('Subtracting dark frames.')
-                        dark_frame = np.median(dark_frame, axis=0).astype(int)
-                        data = data - dark_frame
-                    except KeyError:
-                        None
-
+                    #try:
+                    #    dark_frame = group['dark frame 0'][:]
+                    #    pbar.set_description('Subtracting dark frames.')
+                    #    dark_frame = np.median(dark_frame, axis=0).astype(int)
+                    #    data = data - dark_frame
+                    #    clipped = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
+                    #except KeyError:
+                    #    clipped = detect_dead_pixel(data)
+                    clipped = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
                     pbar.set_description('Calculating errors')
                     error[i] = np.std(data, axis=0) / np.sqrt(len(data))
                     pbar.set_description('Calculating mean pixel values')
-                    corrected_frames[i] = np.mean(data, axis=0)
+                    corrected_frames[i] = np.median(clipped, axis=0)
 
                 # Create new datasets
                 try:
@@ -381,7 +410,7 @@ class DataAnalyzer():
                     overwrite=True)
 
         self.filename = dir
-        del self.f
+        self.f.file.close()
         self.f = HDF5(self.filename, 'open', verbose=self.verbose)
 
     def generate_stokes_frames(self, mode=None):
@@ -591,20 +620,32 @@ class DataPlotter():
         theta = theta / np.pi * 180
         return intensity, theta
 
-    def stokes_image(stokes_frame_norm, S, v=None, ax=None, fig=None, **kwargs):
-        v = v or np.abs(stokes_frame_norm[:, :, S]).max()
+    def stokes_image(stokes_frame_norm, S, v=None, ax=None,
+            colorbar=True, cmap='bwr', **kwargs):
+        if v is None:
+            vmax = np.abs(stokes_frame_norm[:, :, S]).max()
+            vmin = -1 * vmax
+        elif type(v) is np.ndarray:
+            vmin = v[0]
+            vmax = v[1]
+        else:
+            vmin, vmax = -1 * v, v
+
         if ax is None:
             ax = plt.gca()
-        if fig is None:
-            fig = ax.get_figure()
+        fig = ax.get_figure()
 
         im = ax.imshow(
-            stokes_frame_norm[:, :, S], vmin=-v, vmax=v,
-            cmap='bwr', **kwargs)
+            stokes_frame_norm[:, :, S], vmin=vmin, vmax=vmax,
+            cmap=cmap, **kwargs)
+
         ax.set_title('S' + str(S))
         ax.axes.xaxis.set_visible(False)
         ax.axes.yaxis.set_visible(False)
-        fig.colorbar(im, ax=ax)
+        if colorbar:
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            fig.colorbar(im, cax=cax)
         return im
 
     def fourier(y, angles, offset=0.0, ax=None, **kwargs):
@@ -652,6 +693,7 @@ class DataPlotter():
 
         # Select brightest part
         arg = DataPlotter.argmax_nd(frame)[0:3]
+        print(arg)
         pixel = frame[:, arg[1], arg[2]].sum(axis=-1)
         stokes_vector = stokes_frame[arg[1], arg[2]]
         if err is not None:
@@ -664,13 +706,16 @@ class DataPlotter():
 
         # RGB image
         RGB_img = frame[arg[0]].astype('uint8')
-        clip = int(np.min([np.mean(RGB_img) * 2, RGB_img.max()]))
+        clip = RGB_img.max() * 0.8
         clipped = np.clip(RGB_img, 0, clip)
-        axes[0, 0].imshow(clipped)
-        axes[0, 0].imshow(RGB_img)
+        axes[0, 0].imshow(clipped/clipped.max())
         axes[0, 0].set_title('RGB image')
         axes[0, 0].axes.xaxis.set_visible(False)
         axes[0, 0].axes.yaxis.set_visible(False)
+        # Add a divider so that image fits nicely with following images
+        divider = make_axes_locatable(axes[0, 0])
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cax.axis('off')
 
         # Images of Stokes paramaters
         mini = stokes_frame_norm[:, :, 1:].min()
@@ -678,7 +723,7 @@ class DataPlotter():
         v = np.max(np.abs([mini, maxi]))
         for S, coord in enumerate([(0, 1), (1, 0), (1, 1)]):
             DataPlotter.stokes_image(
-                stokes_frame_norm, S + 1, ax=axes[coord], fig=fig, v=v)
+                stokes_frame_norm, S + 1, ax=axes[coord], v=v)
             DataPlotter.highlight_cell(arg[1], arg[2], ax=axes[coord],
                 color='green', lw=5)
 
@@ -728,24 +773,23 @@ class DataPlotter():
                         bbox_inches='tight')
             plt.close(fig)
 
-
-    def stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None):
-        fig, ax = plt.subplots(nrows=4, sharex=True, figsize=(5, 10))
+    def stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None,
+                        ax=None):
+        if ax is None:
+            fig, ax = plt.subplots(nrows=4, sharex=True, figsize=(5, 10))
+            save = True
+        else:
+             save = False
         colors = ['red', 'green', 'blue']
         markers = ['v', 'D', 'o']
 
         # Plot each component of S in a different ax
-        norm13 = np.max(stokes_vectors[:, :, 0], axis=1)
-        norm0 = np.max(stokes_vectors)
+        norm = np.max(stokes_vectors[:, :, 0], axis=1)
         for S in range(4):
             for i, color in enumerate(colors):
                 if S > 0:
-                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm13
-                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm13
-                else:
-                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm0
-                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm0
-                ax[S].set_ylabel(f'S{S}')
+                    stokes_vectors[:, i, S] = stokes_vectors[:, i, S] / norm
+                    stokes_err[:, i, S] = stokes_err[:, i, S] / norm
                 if S < 3:
                     ax[S].axes.xaxis.set_visible(False)
                 if S == 3:
@@ -758,18 +802,16 @@ class DataPlotter():
             ax[S].hlines(0,angles.min()-1,angles.max()+1, colors='black')
             ax[S].set_xlim(angles.min()-1,angles.max()+1)
         ax[0].legend()
-        fig.suptitle(name)
-        fig.tight_layout()
-        if name is None:
-            plt.show()
-        else:
-
+        if save:
+            fig.suptitle(name)
+            fig.tight_layout()
             fig.savefig(name+'.png', dpi=300)
             plt.close(fig)
+        return ax
 
 if __name__ == '__main__':
-    path = './Experiments/Beetle Hyperspectral - maximal exposure - large angle.hdf5'
-    DA = DataAnalyzer(path, verbose=True, force_calculation=False)
-    #print(dict(DA.f.file['Frames'].attrs))
+    path = None
+    DA = DataAnalyzer(path, verbose=False, force_calculation=True)
     DA.stokes_vs_angle_generator()
     DA.single_frames_generator()
+    DA.f.file.close()

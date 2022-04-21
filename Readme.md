@@ -1,11 +1,11 @@
 # Beetle Classifier Robot
 
-*Author* Naor Scheinowitz
-
 ## Introduction
 
 The goal of this project is to create a physical measurement setup and accompanying Python code that characterizes the optical properties of *Coleoptera*. Specifically, we are interested in the polarization and luminosity of reflected light from a beetles shell. This project was inspired by the mind-boggling fact that the [Protaetia speciosa jousselini](https://en.wikipedia.org/wiki/Protaetia_speciosa) almost exclusively reflects left-handed circularly polarized light.
+<!---
 ![Image taken from abovementioned link](https://upload.wikimedia.org/wikipedia/commons/0/04/Scarabaeidae_-_Protaetia_speciosa.JPG)
+--->
 
 ### Measurement procedure (rough outline)
 
@@ -15,8 +15,8 @@ The goal of this project is to create a physical measurement setup and accompany
 This will create a beetle-dataset of the form [beetle species, &lambda;, &theta;, S] or `[beetle species, wavelength, angle, Stokes vector]`.
 
 #### Hardware list
-- *Newport ESP300 motion controller*. Controls the angle-dependent movement of the CCD.
-- *Mikropack Halogen Light Source HL-2000-FHSA*
+- *2x Newport ESP300 motion controller*. Controls the angle-dependent movement of the CCD, the rotation of the specimen and the rotation of the linear polarizer and quarter-wave plate.
+- *Xenon arc lamp*
 - *ThorLabs DCC1645C*. Note: ThorLabs documentation refers to this class of camera as a 'DCx' camera, but it is equivalent to the classification 'UC480', which occasionally shows up in other documentation.
 
 ### Python code structure

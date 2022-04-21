@@ -51,9 +51,10 @@ class HDF5():
             self.file = h5py.File(filename, 'r+')
             if verbose:
                 tools.logprint('Opened file ' + tools.bcolors.blue(filename))
-
+        elif mode == 'read only':
+            self.file = h5py.File(filename, 'r')
         elif mode != 'create':
-            raise ValueError(f'mode parameter should be "open" or "create".')
+            raise ValueError(f'mode parameter should be "open", "create", or "read only".')
 
         self.name = filename
         self.filename = filename
@@ -64,7 +65,7 @@ class HDF5():
         object = self._get_parent(parent)
         try:
             group = object[name]
-            tools.logprint('Opened HDF5 group ' + tools.bcolors.blue(name))
+            #tools.logprint('Opened HDF5 group ' + tools.bcolors.blue(name))
         except KeyError:
             group = object.create_group(name)
             HDF5.write_metadata(group, metadata)
@@ -190,13 +191,13 @@ class HDF5():
     def __name__(self):
         return self.filename
 
-    def __del__(self):
-        try:
-            self.file.close()
-            if self.verbose:
-                    tools.logprint(f'Closed file {self.__name__()}.', 'blue')
-        except ImportError:
-            None
+    #def __del__(self):
+    #    try:
+    #        self.file.close()
+    #        if self.verbose:
+    #                tools.logprint(f'Closed file {self.__name__()}.', 'blue')
+    #    except ImportError:
+    #        None
 
     def __enter__(self):
         return self
@@ -213,8 +214,7 @@ class HDF5():
     # Functions that can be used without instance
 
     def merge_files(source, target):
-        '''This function assumes no groups of level greater than 1
-        '''
+        '''This function assumes no groups of level greater than 1'''
         source = h5py.File(source, 'r')
         target = HDF5(target, 'open')
         for grp in source:
