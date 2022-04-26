@@ -6,3 +6,4 @@ Experiments/
 *__pycache__*
 *cache*
 *DS_Store*
+*.hdf5*
