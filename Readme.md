@@ -1,5 +1,7 @@
 # Beetle Classifier Robot
 
+This repository stores the code I used during my master project in Physics at Leiden University. The code is not maintained by me after April 2022. More information about the project and this code can be found in my thesis.
+
 ## Introduction
 
 The goal of this project is to create a physical measurement setup and accompanying Python code that characterizes the optical properties of *Coleoptera*. Specifically, we are interested in the polarization and luminosity of reflected light from a beetles shell. This project was inspired by the mind-boggling fact that the [Protaetia speciosa jousselini](https://en.wikipedia.org/wiki/Protaetia_speciosa) almost exclusively reflects left-handed circularly polarized light.
