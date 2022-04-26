@@ -93,14 +93,14 @@ class Cam():
 
     def auto_roi(self, mode='peak', width=50, show=True):
         valid_modes = ['reset', 'peak']
+        if mode not in valid_modes:
+            raise ValueError(f'Mode should be in {valid_modes}.')
         xmax = 1280
         ymax = 1024
         tools.logprint('Selecting ROI...')
         if self.testflight:
             return None
         else:
-            if mode not in valid_modes:
-                raise ValueError(f'Mode should be in {valid_modes}.')
             roi = (0, xmax, 0, ymax, 1, 1)
             self.set_settings({'roi': roi}, False)
             if mode == 'peak':
@@ -137,7 +137,8 @@ class Cam():
     def set_settings(self, settings={}, print=True, test_img=True):
         if not type(settings) is dict:
             raise TypeError('Variable "settings" should be of type dict.')
-        s = self.instrument.apply_settings(settings)
+        if not self.testflight:
+            s = self.instrument.apply_settings(settings)
         if print:
             self.get_settings(True)
         if test_img:
@@ -212,8 +213,4 @@ class Cam():
 if __name__ == '__main__':
 
     cam = Cam(testflight=True)
-    #tools.print_dict(cam.instrument.get_full_info())
-    cam.get_settings()
-    img = cam.take_images(5, show=True, median=True)
-    cam.auto_expose()
-    cam.auto_roi()
+    img = cam.take_images(3, show=True, median=True)

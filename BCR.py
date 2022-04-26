@@ -474,7 +474,7 @@ class BCR():
         motor_steps = np.diff(angles_out) // step_size
         steps = nframes * pol_steps * motor_steps
         time_per_step = self.cam.instrument.get_frame_timings()[1] + 1
-        measurement = np.round(time_per_step / 3600, 2) * steps
+        measurement = np.round(time_per_step / 3600 * steps, 2)
         duration = measurement * repeats
         tools.logprint(
             f'Estimated duration of measurement: {measurement} hours.\n'

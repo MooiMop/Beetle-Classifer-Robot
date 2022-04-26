@@ -4,6 +4,5 @@ Testing/
 Experiments/
 *.ipynb_checkpoints/
 *__pycache__*
-*ipynb*
 *cache*
 *DS_Store*

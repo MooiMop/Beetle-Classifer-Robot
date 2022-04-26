@@ -3,16 +3,16 @@
 ## Introduction
 
 The goal of this project is to create a physical measurement setup and accompanying Python code that characterizes the optical properties of *Coleoptera*. Specifically, we are interested in the polarization and luminosity of reflected light from a beetles shell. This project was inspired by the mind-boggling fact that the [Protaetia speciosa jousselini](https://en.wikipedia.org/wiki/Protaetia_speciosa) almost exclusively reflects left-handed circularly polarized light.
-<!---
+
 ![Image taken from abovementioned link](https://upload.wikimedia.org/wikipedia/commons/0/04/Scarabaeidae_-_Protaetia_speciosa.JPG)
---->
+
 
 ### Measurement procedure (rough outline)
 
-1. Illuminate spot on beetle shell with collimated beam of light. We will use narrow-band color filters to create a polychromatic dataset.
-2. Measure reflected light as function of angle with a CCD combined with polarization filters.
+1. Illuminate spot on beetle shell with collimated beam of light.
+2. Measure reflected light as function of angle with a RGB camera combined with polarization filters.
 
-This will create a beetle-dataset of the form [beetle species, &lambda;, &theta;, S] or `[beetle species, wavelength, angle, Stokes vector]`.
+The goal is to create a dataset of shape `[angle of incidence, angle of observation, x, y, stokes vector]`.
 
 #### Hardware list
 - *2x Newport ESP300 motion controller*. Controls the angle-dependent movement of the CCD, the rotation of the specimen and the rotation of the linear polarizer and quarter-wave plate.
