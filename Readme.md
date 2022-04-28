@@ -1,6 +1,6 @@
 # Beetle Classifier Robot
 
-This repository stores the code I used during my master project in Physics at Leiden University. The code is not maintained by me after April 2022. More information about the project and this code can be found in my thesis.
+This repository stores the code I used during my master project in Physics at Leiden University. The code is not maintained by me after April 2022. More information about the project and this code can be found in [my thesis](https://studenttheses.universiteitleiden.nl/handle/1887/3285028).
 
 ## Introduction
 
