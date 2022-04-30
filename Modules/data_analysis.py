@@ -172,28 +172,6 @@ def calc_stokes_params(intensity, intensity_err, angles):
     return stokes_vector, error
 
 @njit
-def detect_dead_pixel(frames):
-    # Expect shape [repeats, theta, x, y, 3]
-    shape = frames.shape
-    X, Y = shape[2:4]
-    output = frames + 0.0
-    counter = 0
-    for x in range(X):
-        for y in range(Y):
-            for RGB in range(3):
-                mx = int(np.max(frames[:, :, x, y, RGB]))
-                mn = int(np.min(frames[:, :, x, y, RGB]))
-                #mdn = int(np.mean(frames[:, :, x, y, RGB]))
-                #std = np.std(frames[:, :, x, y, RGB])
-                if (mx-mn<5) and mn > 10:
-                    print('dead pixel found at x='+str(x)+', y='+str(y)+' and color '+str(RGB)+' with value '+str(mx))
-                    print(mx-mn, mn)
-                    counter += 1
-                    output[:, :, x, y, RGB] = np.zeros(shape[0:2])
-    print(str(counter) + ' pixels removed out of ' + str(X*Y))
-    return output
-
-@njit
 def stokes_frames_normalize(stokes_frames, errors):
     '''Normalize stokes vectors in data cube such that S0 is always 1.
 
@@ -559,10 +537,11 @@ class DataPlotter():
 
     def error_margin(x, upper, lower, ax=None, alpha=0.5,
             color='red', **kwargs):
+        '''Plot shaded region between upper and lower.'''
         if ax is None:
             ax = plt.gca()
-        shaded = ax.fill_between(x, upper, lower,
-                                  alpha=alpha, color=color, **kwargs)
+        shaded = ax.fill_between(
+            x, upper, lower, alpha=alpha, color=color, **kwargs)
         return shaded
 
     def highlight_cell(x, y, width=50, ax=None, **kwargs):
@@ -572,7 +551,7 @@ class DataPlotter():
         ----------
         x : int
             x-coordinate of box center
-        j : int
+        y : int
             y-coordinate of box center
         width : int
             full width of box
@@ -621,12 +600,28 @@ class DataPlotter():
 
     def stokes_image(stokes_frame_norm, S, v=None, ax=None,
             colorbar=True, cmap='bwr', **kwargs):
+        '''Create color image of a stokes frame of a single Stokes parameter.
+        Upper and lower bounds of color scale can be set with parameter v
+        as either
+            - a single value (symmetrical)
+            - a 2-number list (asymmetrical)
+            - None (automatic based on extreme value)
+        '''
         if v is None:
             vmax = np.abs(stokes_frame_norm[:, :, S]).max()
             vmin = -1 * vmax
-        elif type(v) is np.ndarray:
-            vmin = v[0]
-            vmax = v[1]
+        elif type(v) in [np.ndarray, list]:
+            if len(v) != 2:
+                raise ValueError(
+                    'v should be None, float or list with 2 elements.'
+                )
+            elif v[0] > v[1]:
+                raise ValueError(
+                    'v[0] should be smaller than v[1].'
+                )
+            else:
+                vmin = v[0]
+                vmax = v[1]
         else:
             vmin, vmax = -1 * v, v
 
@@ -647,11 +642,12 @@ class DataPlotter():
             fig.colorbar(im, cax=cax)
         return im
 
-    def fourier(y, angles, offset=0.0, ax=None, **kwargs):
+    def fourier(x, y, offset=0.0, ax=None, xlim=(0.2, 6.2), **kwargs):
+        '''Create Fourier transform plot of x,y data.'''
         if ax is None:
             ax = plt.gca()
         N = len(y)
-        dt = angles[1] - angles[0]
+        dt = x[1] - x[0]
         transform = fft(y)
         norm = transform.max()
         transform = np.abs(transform / norm)
@@ -663,7 +659,7 @@ class DataPlotter():
         baseline.set_alpha(0.2)
         baseline.set_color('black')
         ax.set_title('Fourier Transform')
-        ax.set_xlim(0.2, 6.2)
+        ax.set_xlim(xlim)
         ax.set_xlabel(r'Fourier Frequency ($2\pi f$)')
         ax.set_ylabel('Fourier Amplitude')
         return transform, markerline, stemlines, baseline
@@ -671,22 +667,8 @@ class DataPlotter():
     def single_frame(frame, stokes_frame, stokes_frame_norm, angles,
                      err=None, stokes_err=None, name=None):
         '''Plot 6 axes: rgb image, degree of polarization, S1-S3, and the
-        Stokes vector fit on a single pixel.
-
-        Parameters
-        ----------
-        frame : numpy array
-            Input rgb frames of shape [polarizer_angles, x, y, 3].
-        stokes_frame : numpy array
-            Input stokes frames of shape [polarizer_angles, x, y, 3].
-
-        Returns
-        -------
-        intensity: list float
-            intensity values
-        theta: list float
-            wave-plate rotation angles with dtheta = 180/N degrees
-        '''
+        Stokes vector fit on a single pixel. If name is given, plot is saved
+        to current working directory. Otherwise it is shown.'''
         # Assumes input frames are of shape [P, x, y, 3] where P is the number
         # of polarizer angles
 
@@ -753,11 +735,11 @@ class DataPlotter():
         # Fourier transform
         ax = axes[2, 1]
         params = DataPlotter.fourier(
-            pixel, angles, ax=ax, label='Measured')
+            angles, pixel, ax=ax, label='Measured')
         for param in params[1:3]:
             param.set_color(DataPlotter.COLORS[0])
         params = DataPlotter.fourier(
-            I, theta, ax=ax, label='Calculated')
+            theta, I, ax=ax, label='Calculated')
         for param in params[1:3]:
             param.set_color(DataPlotter.COLORS[1])
         ax.legend(loc='upper right')
@@ -774,9 +756,13 @@ class DataPlotter():
 
     def stokes_vs_angle(stokes_vectors, angles, stokes_err=None, name=None,
                         ax=None):
+        '''Plot the different Stokes parameters as a function of angle of
+        observation. If name is given, plot is saved to current working
+        directory. Otherwise it is shown.'''
         if ax is None:
             fig, ax = plt.subplots(nrows=4, sharex=True, figsize=(5, 10))
-            save = True
+            if name is not None:
+                save = True
         else:
              save = False
         colors = ['red', 'green', 'blue']
