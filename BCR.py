@@ -6,11 +6,10 @@ more information about the project.
 '''
 
 __author__ = "Naor Scheinowitz"
+__email__ = "scheinowitz@physics.leidenuniv.nl"
 __credits__ = ["Naor Scheinowitz"]
 __license__ = "GPL-3.0-or-later"
 __version__ = "0.9"
-__maintainer__ = "Naor Scheinowitz"
-__email__ = "scheinowitz@physics.leidenuniv.nl"
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,6 +27,58 @@ from Modules.HDF5manager import HDF5
 
 
 class BCR():
+    '''
+    Class for executing measurement sequences.
+
+    Upon initialization, a connection will be established with all devices
+    listed in class constant DEVICES. This dict also contains the default
+    settings of the devices in the setup.
+
+    After initialization, a measurement sequence can be performed by calling
+    any of the different class methods.
+
+    Attributes
+    ----------
+    user : str
+        Name of experimenter to be saved to metadata of data files.
+    camsettings : dict (default empty)
+        Dictionary of camera settings to be loaded during initialization.
+    testflight : bool (default False)
+        If True, no actual connections to devices are made. Debug mode.
+
+    Methods
+    -------
+    beetle_polarization:
+        Measure beelte polarization for fixed angle_in and different angles_out.
+    brewster:
+        Measure (chromatic) brewster angle.
+    simple_reflection:
+        Take images at different angles without polarization information.
+    lamp_variation:
+        Take identical images during time interval.
+    lamp_polarization:
+        Measure linear polarization of lamp.
+    median_test:
+        Take (many) identical images in series.
+    _get_dark_frame:
+        Take dark frame.
+    _load_defaults:
+        Load default values for measurement sequence/
+    _set_path:
+        Change working directory.
+    _estimate_duration:
+        Estimate duration of measurement sequence.
+
+    Constants
+    ---------
+    DEVICES : dict
+        Dictionary of devices containing dictionaries of device parameters.
+    DEFAULT_PARAMS : dict
+        Default parameters for measurement sequence.
+    POLARIZATIONS : dict
+        Definitions of 'S' and 'P' polarizations.
+    '''
+
     DEVICES = {
         'ESP': {
             'method': 'ESP.ESP',
@@ -37,7 +88,7 @@ class BCR():
             'method': 'ESP.Motor',
             'instrument': 'self.ESP.instruments[1]',
             'axis': 1,
-            'bounds': [-35, 100],
+            'bounds': [-30, 100],
             'velocity': 10,
             },
         'sample': {
@@ -65,7 +116,7 @@ class BCR():
         'overwrite': False,
         'repeats': 10,
         'show': False,
-        'verbose': False,
+        'verbose': True,
     }
 
     POLARIZATIONS = {
@@ -80,6 +131,11 @@ class BCR():
         PATH_MAIN, 'Experiments')
 
     def __init__(self, user, camsettings={}, testflight=False):
+        # Check input types
+        if type(testflight != bool):
+            raise TypeError('testflight should be of type bool')
+        if type(camsettings != dict):
+            raise TypeError('camsettings should be of type dict')
 
         tools.logprint('Welcome to the Beetle Classifier Robot. Great to have '
                        'you back!', 'blue')
@@ -89,11 +145,13 @@ class BCR():
             if 'self' not in key:
                 self.__setattr__(key, eval(key))
 
-        # initialize devices
+        # initialize devices from DEVICES class constant
         for d in self.DEVICES:
             device = self.DEVICES[d]
+            keys = np.array(list(device.keys()))
+            keys = keys[keys!='method']  # Remove method key from list
             params = ', '.join(
-                f'{x}={device[x]}' for x in list(device.keys())[1:])
+                f'{x}={device[x]}' for x in keys)
             command = f'self.{d} = {device["method"]}({params}, '\
                       f'testflight={testflight}, name="{d}")'
             exec(command)
@@ -102,18 +160,12 @@ class BCR():
     def beetle_polarization(self, mode, angle_in, angles_out,
                  step_size, readme, parent=None, pol_steps=16,
                  metadata={}, name='Beetle Hyperspectral',
-                 path='Experiments\Beetle Hyperspectral', **kwargs):
+                 path='Experiments', **kwargs):
 
-        hierarchy = 'One group per filter. Each group has N '\
-                    'datasets of shape [positions,polarizer_angles,x,y,3], '\
-                    'with N being set by parameter "repeats". '\
-                    'Positions and angle_polarizer (in degrees) embedded as '\
-                    'list in metadata of dataset with keys "positions" and '\
-                    '"angle_polarizer".'
         metadata['angle_in'] = angle_in
         metadata['angles_out'] = angles_out
         metadata['step_size'] = step_size
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
         high_level_keys = [
             'hierarchy', 'polarization_definition', 'readme',
             'software_version', 'user']
@@ -182,7 +234,7 @@ class BCR():
                     'list in metadata of dataset with key "positions".'
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
 
         # Check if polarization is valid
         if polarization in ['S', 'P']:
@@ -233,7 +285,7 @@ class BCR():
             if choice in ['y', 'Y']:
                 del f.file[dset.name]
 
-    def reflection_angle(self, bounds, step_size, readme, angle=45,
+    def simple_reflection(self, bounds, step_size, readme, angle=45,
                          name='Reflection Angle',
                          path='Experiments\\Reflection Angle', metadata={},
                          **kwargs):
@@ -244,7 +296,7 @@ class BCR():
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
         metadata['reflection_angle'] = angle
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -283,7 +335,7 @@ class BCR():
                     'Timestamps embedded as list in metadata of dataset with '\
                     'key "timestamps".'
         metadata['dt (seconds)'] = dt
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
 
         # Check if end_datetime makes sense
         if type(end_datetime) is datetime.datetime:
@@ -340,7 +392,7 @@ class BCR():
                     'metadata of dataset with key "positions".'
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -379,7 +431,7 @@ class BCR():
         metadata['dt'] = dt
         metadata['median'] = False
         metadata['polarization'] = polarization
-        m = self._init_experiment(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -413,7 +465,7 @@ class BCR():
         input('Press ENTER to continue.')
         return img
 
-    def _init_experiment(self, hierarchy, kwargs, metadata, path, readme):
+    def _load_defaults(self, hierarchy, kwargs, metadata, path, readme):
         # set experiment folder
         self._set_path(path)
 

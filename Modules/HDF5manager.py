@@ -42,10 +42,9 @@ class HDF5():
                                'instead.', 'yellow')
                 mode = 'open'
             except BlockingIOError:
-                tools.logprint(
-                    'Cannot open HDF5 file as it is open somewhere.',
-                    'red')
-                exit()
+                raise BlockingIOError(
+                    'Cannot open HDF5 file as it is open somewhere.'
+                )
 
         if mode == 'open':
             self.file = h5py.File(filename, 'r+')
