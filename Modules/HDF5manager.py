@@ -205,8 +205,7 @@ class HDF5():
         try:
             self.file.close()
             if self.verbose:
-                    tools.logprint(f'Closed file {self.__name__()} '
-                        'because of __exit__ call.', 'blue')
+                    tools.logprint(f'Closed file {self.__name__()}.', 'blue')
         except ImportError:
             None
 

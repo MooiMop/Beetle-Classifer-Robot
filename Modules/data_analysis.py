@@ -273,35 +273,40 @@ class DataAnalyzer():
         # Get filename and set working directory
         if path is None:
             path = input('(Full) path to HDF5 file to consider: ')
-        self.filename = os.path.basename(path)
-        os.chdir(os.path.dirname(path))
+        self.file = os.path.realpath(path)
+        self.filename = os.path.basename(self.file)
+        os.chdir(os.path.dirname(self.file))
         self.verbose = verbose
 
-        # Open datafile using custom HDF5 module
-        self.f = HDF5(self.filename, 'open', verbose=verbose)
-        if self.verbose:
-            self.f.print_structure()
+        # Open datafile and check which datasets it contains
+        with HDF5(self.file, 'read only', verbose=False) as f:
+            if self.verbose:
+                f.print_structure()
+            keys = list(f.file.keys())
+            raw = not f.contains_key('Frames_err')
+            no_stokes = not f.contains_key('Stokes_vectors')
 
-        # Start correction sequence if file is raw file.
-        raw = not self.f.contains_key('Frames_err')
         # Check if the corrected file already exists.
         corrected_path = os.path.join(
             os.getcwd(),
             self.filename[:-5] + ' corrected',
             self.filename[:-5] + ' corrected.hdf5')
         corrected_exists = os.path.exists(corrected_path)
+
+        # Correct raw frames
         if raw:
             if not corrected_exists or force_calculation:
                 self.correction_sequence()
             elif corrected_exists:
                 if self.verbose:
-                    tools.logprint('Corrected file already exists. '
-                                   'Switching to it.')
-                self.filename = os.path.basename(corrected_path)
-                os.chdir(os.path.dirname(corrected_path))
-                self.f = HDF5(self.filename, 'open', verbose=verbose)
+                    tools.logprint(
+                    'Corrected file already exists. Switching to it.'
+                    )
+                self.file = os.path.realpath(corrected_path)
+                self.filename = os.path.basename(self.file)
+                os.chdir(os.path.dirname(self.file))
 
-        if (not self.f.contains_key('Stokes_vectors')) or force_calculation:
+        if no_stokes or force_calculation:
             for mode in ['single frame', None]:
                 self.generate_stokes_frames(mode)
 
@@ -323,72 +328,66 @@ class DataAnalyzer():
             os.mkdir(dir)
             os.chdir(dir)
 
-        # Open new HDF5 file in create mode
-        with HDF5(dir, 'create', verbose=self.verbose) as corrected:
-            # Transfer high-level metadata
-            metadata = HDF5.read_metadata(self.f.file)
-            HDF5.write_metadata(corrected.file, metadata)
+        with HDF5(self.file, 'read only', verbose=False) as raw:
+            with HDF5(dir, 'create', verbose=self.verbose, date=False) as corrected:
+                # Transfer high-level metadata
+                metadata = HDF5.read_metadata(raw.file)
+                HDF5.write_metadata(corrected.file, metadata)
 
-            # Recreate group structure with for loop
-            for groupname in self.f.file:
-                group = self.f.file[groupname]
-                #try:
-                #    dset = group['Frames combined zoomed 0']
-                #except KeyError:
-                try:
-                    dset = group['Frames combined']
-                except KeyError:
-                    self.f.combine_datasets(parent=groupname)
-                    dset = group['Frames combined']
-
-                # Combine group and dataset metadata and write to new group
-                metadata = HDF5.read_metadata(group) | HDF5.read_metadata(dset)
-                corrected.group(groupname, metadata=metadata)
-
-                # Set shape of corrected frames output
-                reflection_angles = dset.shape[1]
-                output_shape = dset.shape[1:]
-                corrected_frames = np.zeros(output_shape)
-                error = np.zeros(output_shape)
-
-                pbar = trange(reflection_angles)
-                for i in pbar:
-                    pbar.set_description("Loading data")
-                    data = dset[:, i]  # zero-th dimension is the number of
-                                       # repeats of the experiment
+                # Recreate group structure with for loop
+                for groupname in raw.file:
+                    group = raw.file[groupname]
                     try:
-                        dark_frame = group['dark frame 0'][:]
-                        pbar.set_description('Subtracting dark frames.')
-                        dark_frame = np.median(dark_frame, axis=0).astype(int)
-                        data = data - dark_frame
-                        data = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
+                        dset = group['Frames combined']
                     except KeyError:
-                        None
+                        raw.combine_datasets(parent=groupname)
+                        dset = group['Frames combined']
 
-                    pbar.set_description('Calculating errors')
-                    error[i] = np.std(data, axis=0) / np.sqrt(len(data))
-                    pbar.set_description('Calculating mean pixel values')
-                    corrected_frames[i] = np.median(data, axis=0)
+                    # Combine group and dataset metadata and write to new group
+                    metadata = HDF5.read_metadata(group) | HDF5.read_metadata(dset)
+                    corrected.group(groupname, metadata=metadata)
 
-                # Create new datasets
-                try:
-                    angles_out = dset.attrs['angles_out']
-                except KeyError:
-                    angles_out = dset.attrs['positions']
-                polarizer_angles = dset.attrs['polarizer_angles']
-                corrected.create_dataset(
-                    'Frames', corrected_frames, groupname, overwrite=True)
-                corrected.create_dataset(
-                    'Frames_err', error, groupname, overwrite=True)
-                corrected.create_dataset(
-                    'angles_out', angles_out, groupname, overwrite=True)
-                corrected.create_dataset(
-                    'polarizer_angles', polarizer_angles, groupname,
-                    overwrite=True)
+                    # Set shape of corrected frames output
+                    reflection_angles = dset.shape[1]
+                    output_shape = dset.shape[1:]
+                    corrected_frames = np.zeros(output_shape)
+                    error = np.zeros(output_shape)
 
-        self.filename = dir
-        self.f.file.close()
-        self.f = HDF5(self.filename, 'open', verbose=self.verbose)
+                    pbar = trange(reflection_angles)
+                    for i in pbar:
+                        pbar.set_description("Loading data")
+                        data = dset[:, i]  # zero-th dimension is the number of
+                                           # repeats of the experiment
+                        try:
+                            dark_frame = group['dark frame 0'][:]
+                            pbar.set_description('Subtracting dark frames')
+                            dark_frame = np.median(dark_frame, axis=0).astype(int)
+                            data = data - dark_frame
+                            data = np.clip(data, MIN_PIXEL_VALUE, MAX_PIXEL_VALUE)
+                        except KeyError:
+                            None
+
+                        pbar.set_description('Calculating errors')
+                        error[i] = np.std(data, axis=0) / np.sqrt(len(data))
+                        pbar.set_description('Calculating mean pixel values')
+                        corrected_frames[i] = np.median(data, axis=0)
+
+                    # Create new datasets
+                    try:  # older versions used different key names for angle_out
+                        angles_out = dset.attrs['angles_out']
+                    except KeyError:
+                        angles_out = dset.attrs['positions']
+                    polarizer_angles = dset.attrs['polarizer_angles']
+
+                    names = ['Frames', 'Frames_err', 'angles_out',
+                             'polarizer_angles']
+                    datas = [corrected_frames, error, angles_out,
+                             polarizer_angles]
+                    for n, d in zip(names, datas):
+                        corrected.create_dataset(n, d, groupname, overwrite=True)
+
+                self.filename = os.path.basename(corrected.filename)
+                self.file = os.path.realpath(self.filename)
 
     def generate_stokes_frames(self, mode=None):
         '''Generate stokes frames using one of three different mode and save
@@ -411,98 +410,98 @@ class DataAnalyzer():
             For modes 'rgb' and None, a seperate dataset with normalized
             stokes vectors is created.
         '''
-        if self.verbose:
-            tools.logprint(
-                f'Generating Stokes Frames (mode={mode}).')
-        for group_name in self.f.file:
-            group = self.f.group(group_name)
-            angles = group['polarizer_angles'][:]
-            frames = group['Frames'][:]
-            frames_err = group['Frames_err'][:]
-            if mode == 'rgb':
-                data = []
-                data_err = []
-                norm = []
-                norm_err = []
-                for channel in range(3):
-                    selection = frames[:, :, :, :, channel]
-                    selection2 = frames_err[:, :, :, :, channel]
-                    d, e = calc_stokes_frames(selection, selection2, angles)
-                    n, n_e = stokes_frames_normalize(d, e)
-                    data.append(d)
-                    norm.append(n)
-                    data_err.append(e)
-                    norm_err.append(n_e)
-                stokes_frames = np.transpose(data, (1, 2, 3, 0, 4))
-                error = np.transpose(data_err, (1, 2, 3, 0, 4))
-                norm = np.transpose(norm, (1, 2, 3, 0, 4))
-                norm_err = np.transpose(norm_err, (1, 2, 3, 0, 4))
-                name = 'Stokes_frames_rgb'
-            elif mode == 'single frame':
-                stokes_frames = []
-                error = []
-                for channel in range(3):
-                    for i in range(len(frames)):
-                        input = frames[i, :, :, :, channel].sum(axis=(1, 2))
-                        err = frames_err[i, :, :, :, channel].sum(axis=(1, 2))
-                        vec, vec_err = calc_stokes_params(input, err, angles)
-                        stokes_frames.append(vec)
-                        error.append(vec_err)
-                stokes_frames = np.reshape(stokes_frames, (len(frames), 3, 4))
-                error = np.reshape(error, (len(frames), 3, 4))
-                name = 'Stokes_vectors'
-            else:
-                shape = frames.shape
-                frames, frames_err = frames.sum(axis=4), frames_err.sum(axis=4)
-                stokes_frames, error = calc_stokes_frames(
-                    frames, frames_err, angles)
-                norm, norm_err = stokes_frames_normalize(
-                    stokes_frames, error)
-                name = 'Stokes_frames'
+        with HDF5(self.file, 'open', verbose=False) as f:
+            if self.verbose:
+                tools.logprint(
+                    f'Generating Stokes Frames (mode={mode}).')
+            for group_name in f.file:
+                group = f.group(group_name)
+                angles = group['polarizer_angles'][:]
+                frames = group['Frames'][:]
+                frames_err = group['Frames_err'][:]
 
-            self.f.create_dataset(
-                name, stokes_frames, group_name, overwrite=True)
-            self.f.create_dataset(
-                name+'_error', error, group_name, overwrite=True)
-            if mode != 'single frame':
-                self.f.create_dataset(
-                    name+'_normalized', norm, group_name, overwrite=True)
-                self.f.create_dataset(
-                    name+'_normalized_error', norm_err, group_name,
-                    overwrite=True)
+                if mode == 'rgb':
+                    data = []
+                    data_err = []
+                    norm = []
+                    norm_err = []
+                    for channel in range(3):
+                        selection = frames[:, :, :, :, channel]
+                        selection2 = frames_err[:, :, :, :, channel]
+                        d, e = calc_stokes_frames(selection, selection2, angles)
+                        n, n_e = stokes_frames_normalize(d, e)
+                        data.append(d)
+                        norm.append(n)
+                        data_err.append(e)
+                        norm_err.append(n_e)
+                    stokes_frames = np.transpose(data, (1, 2, 3, 0, 4))
+                    error = np.transpose(data_err, (1, 2, 3, 0, 4))
+                    norm = np.transpose(norm, (1, 2, 3, 0, 4))
+                    norm_err = np.transpose(norm_err, (1, 2, 3, 0, 4))
+                    name = 'Stokes_frames_rgb'
+                elif mode == 'single frame':
+                    stokes_frames = []
+                    error = []
+                    for channel in range(3):
+                        for i in range(len(frames)):
+                            input = frames[i, :, :, :, channel].sum(axis=(1, 2))
+                            err = frames_err[i, :, :, :, channel].sum(axis=(1, 2))
+                            vec, vec_err = calc_stokes_params(input, err, angles)
+                            stokes_frames.append(vec)
+                            error.append(vec_err)
+                    stokes_frames = np.reshape(stokes_frames, (len(frames), 3, 4))
+                    error = np.reshape(error, (len(frames), 3, 4))
+                    name = 'Stokes_vectors'
+                else:
+                    shape = frames.shape
+                    frames, frames_err = frames.sum(axis=4), frames_err.sum(axis=4)
+                    stokes_frames, error = calc_stokes_frames(
+                        frames, frames_err, angles)
+                    norm, norm_err = stokes_frames_normalize(
+                        stokes_frames, error)
+                    name = 'Stokes_frames'
+
+                names, datas = [name, name+'_error'], [stokes_frames, error]
+                if mode != 'single frame':
+                    names += [name+'_normalized', name+'_normalized_error']
+                    datas += [norm, norm_err]
+                for n, d in zip(names, datas):
+                    f.create_dataset(n, d, group_name, overwrite=True)
 
     def single_frames_generator(self):
         '''Generate a plot of each Stokes vector as a seperately colored frame
         for each reflection angle in every data group.
         '''
-        for group_name in self.f.file:
-            group = self.f.group(group_name)
-            angles_out = group['angles_out'][:]
-            angles = group['polarizer_angles'][:]
-            for angle in angles_out:
-                selection = np.argmax(angles_out == angle)
-                frame = group['Frames'][selection]
-                stokes_frame = group['Stokes_frames'][selection]
-                stokes_frame_norm = group['Stokes_frames_normalized']
-                stokes_frame_norm = stokes_frame_norm[selection]
-                err = group['Frames_err'][selection]
-                stokes_err = group['Stokes_frames_error'][selection]
-                name = f'Frame overview - {group_name[:2]}--{angle}'
-                DataPlotter.single_frame(
-                    frame, stokes_frame, stokes_frame_norm, angles, err,
-                    stokes_err, name)
+        with HDF5(self.file, 'read only', verbose=False) as f:
+            for group_name in f.file:
+                group = f.group(group_name)
+                angles_out = group['angles_out'][:]
+                angles = group['polarizer_angles'][:]
+                for angle in angles_out:
+                    selection = np.argmax(angles_out == angle)
+                    frame = group['Frames'][selection]
+                    stokes_frame = group['Stokes_frames'][selection]
+                    stokes_frame_norm = group['Stokes_frames_normalized']
+                    stokes_frame_norm = stokes_frame_norm[selection]
+                    err = group['Frames_err'][selection]
+                    stokes_err = group['Stokes_frames_error'][selection]
+                    name = f'Frame overview - {group_name[:2]}--{angle}'
+                    DataPlotter.single_frame(
+                        frame, stokes_frame, stokes_frame_norm, angles, err,
+                        stokes_err, name)
 
     def stokes_vs_angle_generator(self):
         '''Generate a plot of Stokes parameter vs reflection angle for each
         data group.
         '''
-        for group_name in self.f.file:
-            group = self.f.group(group_name)
-            stokes_vectors = group['Stokes_vectors'][:]
-            stokes_err = group['Stokes_vectors_error'][:]
-            angles = group['angles_out'][:]
-            DataPlotter.stokes_vs_angle(
-                stokes_vectors, angles, stokes_err, group_name)
+        with HDF5(self.file, 'read only', verbose=False) as f:
+            for group_name in f.file:
+                group = f.group(group_name)
+                stokes_vectors = group['Stokes_vectors'][:]
+                stokes_err = group['Stokes_vectors_error'][:]
+                angles = group['angles_out'][:]
+                DataPlotter.stokes_vs_angle(
+                    stokes_vectors, angles, stokes_err, group_name)
 
 
 class DataPlotter():
@@ -674,7 +673,6 @@ class DataPlotter():
 
         # Select brightest part
         arg = DataPlotter.argmax_nd(frame)[0:3]
-        print(arg)
         pixel = frame[:, arg[1], arg[2]].sum(axis=-1)
         stokes_vector = stokes_frame[arg[1], arg[2]]
         if err is not None:
@@ -796,7 +794,6 @@ class DataPlotter():
 
 if __name__ == '__main__':
     path = None
-    DA = DataAnalyzer(path, verbose=False, force_calculation=True)
+    DA = DataAnalyzer(path, verbose=True, force_calculation=True)
     DA.stokes_vs_angle_generator()
     DA.single_frames_generator()
-    DA.f.file.close()

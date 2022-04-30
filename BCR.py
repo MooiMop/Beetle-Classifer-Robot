@@ -116,7 +116,7 @@ class BCR():
         'overwrite': False,
         'repeats': 10,
         'show': False,
-        'verbose': True,
+        'verbose': False,
     }
 
     POLARIZATIONS = {
@@ -132,9 +132,9 @@ class BCR():
 
     def __init__(self, user, camsettings={}, testflight=False):
         # Check input types
-        if type(testflight != bool):
+        if type(testflight) != bool:
             raise TypeError('testflight should be of type bool')
-        if type(camsettings != dict):
+        if type(camsettings) != dict:
             raise TypeError('camsettings should be of type dict')
 
         tools.logprint('Welcome to the Beetle Classifier Robot. Great to have '
@@ -158,70 +158,80 @@ class BCR():
 
     # ~~~ Experiment sequences ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def beetle_polarization(self, mode, angle_in, angles_out,
-                 step_size, readme, parent=None, pol_steps=16,
+                 step_size, readme, parent='auto', pol_steps=16,
                  metadata={}, name='Beetle Hyperspectral',
                  path='Experiments', **kwargs):
 
         metadata['angle_in'] = angle_in
         metadata['angles_out'] = angles_out
         metadata['step_size'] = step_size
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        m = self._load_defaults(kwargs, metadata, path, readme)
         high_level_keys = [
             'hierarchy', 'polarization_definition', 'readme',
             'software_version', 'user']
         m_high_level =  {k: v for k, v in m.items() if k in high_level_keys}
         m_low_level =  {k: v for k, v in m.items() if k not in high_level_keys}
 
-        # Prepare savefile
+        # Create or open savefile
         if mode == 'create':
-            f = HDF5(name, 'create', self.user, False, m_high_level)
+            args = (name, 'create', self.user, True, m_high_level)
         elif mode == 'add':
-            f = HDF5(name, 'open')
-        if parent is None:
-            parent = f'{angle_in} degree reflection'
-        # Check if group exists and create if not
-        f.group(parent, metadata=m_low_level)
+            args = (name, 'open')
 
-        if dark:
-            self._get_dark_frame(f, parent)
+        with HDF5(*args) as f:
+            # Check if HDF5 group exists and create if not
+            if type(parent) is str:
+                if parent == 'auto':
+                    parent = f'{angle_in} degree reflection'
+                f.group(parent, metadata=m_low_level)
+            elif parent is None:
+                pass  # this means that the dataset will be saved without a group
 
-        # Start measurement
-        tools.logprint('Starting measurement.')
-        self._estimate_duration(pol_steps, angles_out, step_size)
-        self.sample.move(angle_in, 'absolute', verbose)
-        angles = np.arange(
-            angles_out[0],
-            angles_out[1] + step_size,
-            step_size)
-        polarizer_angles = np.round(
-            np.linspace(0, 180, pol_steps),
-            2)
-        try:
-            self.polarizer.lin_polarizer.move(90, 'absolute', verbose)
-            for repeat in tqdm(range(repeats)):
-                for index, angle in enumerate(angles):
-                    position_adjusted = -90 + angle_in + angle
-                    self.big_arm.move(position_adjusted, 'absolute', verbose)
-                    img = []
-                    for p in polarizer_angles:
-                        self.polarizer.quart_lambda.move(
-                            p, 'absolute', verbose)
-                        img.append(
-                            self.cam.take_images(nframes, median, show)[0])
-                    img = np.array(img)
-                    img = img[np.newaxis, :]
-                    if index == 0:  # Create empty dataset with metadata
-                        m = self.cam.get_settings(print=False)
-                        m['angles_out'] = angles
-                        m['polarizer_angles'] = polarizer_angles
-                        dset = f.create_dataset('Frames', img, parent, m)
-                    else:
-                        HDF5.append_dataset(dset, img)
-            tools.logprint('Measurement sequence completed!', 'green')
-        except KeyboardInterrupt:
-            choice = input('Delete uncompleted measurement run? (y/N)')
-            if choice in ['y', 'Y']:
-                del f.file[dset.name]
+            if dark:
+                self._get_dark_frame(f, parent)
+
+            # Start measurement
+            tools.logprint('Starting measurement.')
+            self._estimate_duration(pol_steps, angles_out, step_size)
+            self.sample.move(angle_in, 'absolute', verbose)
+            angles = np.arange(
+                angles_out[0],
+                angles_out[1] + step_size,
+                step_size)
+            polarizer_angles = np.round(
+                np.linspace(0, 180, pol_steps),
+                2)
+            try:
+                self.polarizer.lin_polarizer.move(90, 'absolute', verbose)
+                for repeat in tqdm(range(repeats)):
+                    for index, angle in enumerate(angles):
+                        # Move stuff
+                        position_adjusted = -90 + angle_in + angle
+                        self.big_arm.move(position_adjusted, 'absolute', verbose)
+
+                        # Take images at different polarizer angles
+                        img = []
+                        for p in polarizer_angles:
+                            self.polarizer.quart_lambda.move(
+                                p, 'absolute', verbose)
+                            img.append(
+                                self.cam.take_images(nframes, median, show)[0])
+                        img = np.array(img)  # transform list to array
+                        img = img[np.newaxis, :]   # add new axis so it can be appended to other images
+
+                        # Save images
+                        if index == 0:  # create dataset after first images
+                            m = self.cam.get_settings(print=False)
+                            m['angles_out'] = angles
+                            m['polarizer_angles'] = polarizer_angles
+                            dset = f.create_dataset('Frames', img, parent, m)
+                        else:
+                            HDF5.append_dataset(dset, img)
+                tools.logprint('Measurement sequence completed!', 'green')
+            except KeyboardInterrupt:
+                choice = input('Delete uncompleted measurement run? (y/N)')
+                if choice in ['y', 'Y']:
+                    del f.file[dset.name]
 
     def brewster(self, mode, polarization, bounds, step_size, readme,
                  filter=None, name='Brewster',
@@ -234,7 +244,8 @@ class BCR():
                     'list in metadata of dataset with key "positions".'
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        metadata['hierarchy'] = hierarchy
+        m = self._load_defaults(kwargs, metadata, path, readme)
 
         # Check if polarization is valid
         if polarization in ['S', 'P']:
@@ -296,7 +307,8 @@ class BCR():
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
         metadata['reflection_angle'] = angle
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        metadata['hierarchy'] = hierarchy
+        m = self._load_defaults(kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -335,7 +347,8 @@ class BCR():
                     'Timestamps embedded as list in metadata of dataset with '\
                     'key "timestamps".'
         metadata['dt (seconds)'] = dt
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        metadata['hierarchy'] = hierarchy
+        m = self._load_defaults(kwargs, metadata, path, readme)
 
         # Check if end_datetime makes sense
         if type(end_datetime) is datetime.datetime:
@@ -392,7 +405,8 @@ class BCR():
                     'metadata of dataset with key "positions".'
         metadata['bounds'] = bounds
         metadata['step_size'] = step_size
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        metadata['hierarchy'] = hierarchy
+        m = self._load_defaults(kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -431,7 +445,8 @@ class BCR():
         metadata['dt'] = dt
         metadata['median'] = False
         metadata['polarization'] = polarization
-        m = self._load_defaults(hierarchy, kwargs, metadata, path, readme)
+        metadata['hierarchy'] = hierarchy
+        m = self._load_defaults(kwargs, metadata, path, readme)
         f = HDF5(name, 'create', self.user, True, m)
 
         if dark:
@@ -465,7 +480,7 @@ class BCR():
         input('Press ENTER to continue.')
         return img
 
-    def _load_defaults(self, hierarchy, kwargs, metadata, path, readme):
+    def _load_defaults(self, kwargs, metadata, path, readme):
         # set experiment folder
         self._set_path(path)
 
@@ -475,7 +490,6 @@ class BCR():
         # Metadata
         default_metadata = {
             'date': tools.get_time(format='date'),
-            'hierarchy': hierarchy,
             'median': median,
             'nframes': nframes,
             'readme': readme,
@@ -523,14 +537,15 @@ class BCR():
                 raise OSError()
 
     def _estimate_duration(self, pol_steps, angles_out, step_size):
-        motor_steps = np.diff(angles_out) // step_size
-        steps = nframes * pol_steps * motor_steps
-        time_per_step = self.cam.instrument.get_frame_timings()[1] + 1
-        measurement = np.round(time_per_step / 3600 * steps, 2)
-        duration = measurement * repeats
-        tools.logprint(
-            f'Estimated duration of measurement: {measurement} hours.\n'
-            f'Estimated duration of sequence: {duration} hours.')
+        if not self.testflight:
+            motor_steps = np.diff(angles_out) // step_size
+            steps = nframes * pol_steps * motor_steps
+            time_per_step = self.cam.instrument.get_frame_timings()[1] + 1
+            measurement = np.round(time_per_step / 3600 * steps, 2)
+            duration = measurement * repeats
+            tools.logprint(
+                f'Estimated duration of measurement: {measurement} hours.\n'
+                f'Estimated duration of sequence: {duration} hours.')
 
 
 if __name__ == '__main__':
