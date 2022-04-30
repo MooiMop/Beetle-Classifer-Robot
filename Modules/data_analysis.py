@@ -282,9 +282,7 @@ class DataAnalyzer():
         with HDF5(self.file, 'read only', verbose=False) as f:
             if self.verbose:
                 f.print_structure()
-            keys = list(f.file.keys())
             raw = not f.contains_key('Frames_err')
-            no_stokes = not f.contains_key('Stokes_vectors')
 
         # Check if the corrected file already exists.
         corrected_path = os.path.join(
@@ -305,6 +303,9 @@ class DataAnalyzer():
                 self.file = os.path.realpath(corrected_path)
                 self.filename = os.path.basename(self.file)
                 os.chdir(os.path.dirname(self.file))
+
+        with HDF5(self.file, 'read only', verbose=False) as f:
+            no_stokes = not f.contains_key('Stokes_vectors')
 
         if no_stokes or force_calculation:
             for mode in ['single frame', None]:
