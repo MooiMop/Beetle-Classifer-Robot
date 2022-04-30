@@ -9,7 +9,7 @@ __author__ = "Naor Scheinowitz"
 __email__ = "scheinowitz@physics.leidenuniv.nl"
 __credits__ = ["Naor Scheinowitz"]
 __license__ = "GPL-3.0-or-later"
-__version__ = "0.9"
+__version__ = "1.0"
 
 import numpy as np
 import matplotlib.pyplot as plt
